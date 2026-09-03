@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
 ### Added
 
 - Real frontend API-client tests covering normalization, pagination, AI-key masking and HTTP failure behavior.
@@ -9,14 +11,19 @@
 - Architecture/trust-boundary documentation, contribution guidance and a pull-request quality checklist.
 - Bounded concurrent semantic-review network batches with retries and explicit partial-failure reporting; successful batches are retained while failed batches remain pending.
 
-### Maintenance
+### Changed
 
-- Repository hygiene baseline: fixed the clone URL, hardened CI permissions and timeouts, added dependency checks, and enabled weekly Dependabot updates.
-- Updated GitHub Actions to their current Node 24-compatible v7 releases to remove runner deprecation warnings.
-- Frontend CI no longer allows an empty test suite to pass; backend CI now includes a compile gate before pytest.
-- README now documents design principles, verification evidence, safety boundaries and known deployment limitations.
 - Split reusable API support and AI transport/secret-handling logic out of `backend/app/main.py` while preserving the existing route surface and semantic-review monkeypatch seam.
 - Semantic-review concurrency is limited to model network calls; SQLite writes remain deterministic and single-threaded in batch order.
+- README now documents design principles, verification evidence, safety boundaries and known deployment limitations.
+- Dependency automation groups routine updates and defers frontend semver-major migrations to dedicated compatibility PRs.
+
+### Maintenance
+
+- Hardened CI permissions, cancellation and timeouts; added dependency integrity and backend compile checks.
+- Frontend CI no longer allows an empty test suite to pass.
+- Enabled grouped weekly Dependabot maintenance for Python, frontend dependencies and GitHub Actions.
+- Updated GitHub Actions to their current Node 24-compatible v7 releases.
 
 ## [0.2.1] - 2026-09-03
 
