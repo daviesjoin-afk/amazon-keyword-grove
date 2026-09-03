@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Real frontend API-client tests covering normalization, pagination, AI-key masking and HTTP failure behavior.
+- Architecture/trust-boundary documentation, contribution guidance and a pull-request quality checklist.
+
 ### Maintenance
 
 - Repository hygiene baseline: fixed the clone URL, hardened CI permissions and timeouts, added dependency checks, and enabled weekly Dependabot updates.
 - Updated GitHub Actions to their current Node 24-compatible v7 releases to remove runner deprecation warnings.
+- Frontend CI no longer allows an empty test suite to pass; backend CI now includes a compile gate before pytest.
+- README now documents design principles, verification evidence, safety boundaries and known deployment limitations.
 
 ## [0.2.1] - 2026-09-03
 
