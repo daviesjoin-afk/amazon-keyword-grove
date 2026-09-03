@@ -134,6 +134,7 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
     assert len(result["source_asins"]) == 2
     refreshed_product = client.get(f"/api/products/{product_id}").json()
     assert refreshed_product["status"] == "active"
+    assert refreshed_product["keyword_count"] == 2
     assert refreshed_product["source_asin_count"] == 2
 
     listing = client.get(f"/api/products/{product_id}/keywords", params={"search": "room", "page_size": 10})

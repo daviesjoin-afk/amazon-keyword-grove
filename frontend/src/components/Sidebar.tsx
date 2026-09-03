@@ -67,7 +67,7 @@ export function Sidebar({ view, product, onNavigate }: SidebarProps) {
             <span>未连接 Amazon</span>
           </div>
         </div>
-        <div className="sidebar-version">v0.3.1 · US English</div>
+        <div className="sidebar-version">v0.3.2 · US English</div>
       </div>
     </aside>
   )

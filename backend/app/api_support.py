@@ -82,8 +82,8 @@ def product_response(row: Any, connection: Any) -> dict[str, Any]:
     data["settings"] = loads(data.pop("settings_json", "{}"), {})
     product_id = int(data["id"])
     stats = connection.execute(
-        """SELECT COUNT(*) AS keywords,
-                  SUM(CASE WHEN COALESCE(manual_match_strength, match_strength_auto) = 'strong' THEN 1 ELSE 0 END) AS strong_keywords,
+        """SELECT COUNT(DISTINCT k.id) AS keywords,
+                  COUNT(DISTINCT CASE WHEN COALESCE(manual_match_strength, match_strength_auto) = 'strong' THEN k.id END) AS strong_keywords,
                   COUNT(DISTINCT pa.asin) AS source_asins
            FROM keywords k LEFT JOIN keyword_sources pa ON pa.keyword_id = k.id
            WHERE k.product_id = ? AND k.deleted_at IS NULL""",

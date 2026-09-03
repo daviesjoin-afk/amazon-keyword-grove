@@ -41,7 +41,7 @@ from .schemas import AIConfigUpdate, KeywordUpdate, ProductCreate, ProductUpdate
 from .utils import clean_text, dumps, loads, now_iso, tokens
 
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 # The browser starts reviews as a background job so a refresh does not lose
 # the visible progress. Decisions themselves remain durable in SQLite; this
