@@ -5,6 +5,7 @@
 ### Maintenance
 
 - Repository hygiene baseline: fixed the clone URL, hardened CI permissions and timeouts, added dependency checks, and enabled weekly Dependabot updates.
+- Updated GitHub Actions to their current Node 24-compatible v7 releases to remove runner deprecation warnings.
 
 ## [0.2.1] - 2026-09-03
 
