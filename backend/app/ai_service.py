@@ -7,11 +7,16 @@ semantic-review helper logic so transport concerns do not dominate ``main.py``.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
+
+from fastapi import HTTPException
 
 from .api_support import api_error
 from .db import read_connection
@@ -19,6 +24,8 @@ from .utils import clean_text, loads, tokens
 
 
 SEMANTIC_REVIEW_VERSION = "mimo-double-audit-v2"
+SEMANTIC_REVIEW_RETRIES = 3
+SemanticRequester = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
 
 def public_ai_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +128,125 @@ def ai_json_response(config: dict[str, Any], payload: dict[str, Any]) -> dict[st
         return json.loads(content[start:end + 1])
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
         api_error(502, "ai_review_invalid_response", "模型未返回可解析的 JSON 审核结果")
+
+
+def semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build one bounded request so batches can be retried independently."""
+
+    return {
+        "model": clean_text(config.get("model")),
+        "response_format": {"type": "json_object"},
+        "reasoning": {"effort": "none"},
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "product_title": product.get("product_title"),
+                        "bullet_points": product.get("bullet_points", []),
+                        "core_terms": product.get("core_terms", []),
+                        "task": "Double-audit every candidate using the product copy plus the local rule evidence. Relevant long-tail terms must be exact targeting. Broad is allowed only for an exact core term. Return {reviews:[{id,decision,relevance_score,confidence,reason_zh,negative_phrase_root?}]}. Scores are 0-100. Do not omit any candidate id.",
+                        "candidates": candidates,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        "max_completion_tokens": min(5000, 90 * len(candidates)),
+        "stream": False,
+    }
+
+
+def semantic_batch_error(error: Exception) -> str:
+    """Return a short, non-secret error suitable for a review summary."""
+
+    if isinstance(error, HTTPException):
+        detail = error.detail
+        if isinstance(detail, dict):
+            return clean_text(detail.get("message") or detail.get("code"))[:240] or f"HTTP {error.status_code}"
+        return clean_text(detail)[:240] or f"HTTP {error.status_code}"
+    return clean_text(str(error))[:240] or error.__class__.__name__
+
+
+def run_semantic_batch(
+    config: dict[str, Any],
+    product: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    request_json: SemanticRequester,
+    *,
+    retries: int | None = None,
+) -> tuple[dict[int, dict[str, Any]], str | None]:
+    """Call the model with bounded retries and require one review per candidate."""
+
+    expected_ids = {item["id"] for item in candidates}
+    prompt = semantic_batch_prompt(config, product, candidates)
+    attempts = SEMANTIC_REVIEW_RETRIES if retries is None else max(1, retries)
+    last_error = ""
+    for attempt in range(attempts):
+        try:
+            result = request_json(config, prompt)
+            reviews = result.get("reviews") if isinstance(result, dict) else None
+            if not isinstance(reviews, list):
+                raise ValueError("模型审核结果缺少 reviews 列表")
+            reviews_by_id: dict[int, dict[str, Any]] = {}
+            for review in reviews:
+                if not isinstance(review, dict):
+                    continue
+                try:
+                    review_id = int(review.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if review_id in expected_ids:
+                    reviews_by_id[review_id] = review
+            missing_ids = expected_ids.difference(reviews_by_id)
+            if missing_ids:
+                raise ValueError(f"模型未返回全部关键词审核结果，缺少 {len(missing_ids)} 条")
+            return reviews_by_id, None
+        except Exception as error:  # one failed model request must not cancel sibling batches
+            last_error = semantic_batch_error(error)
+            if attempt + 1 < attempts:
+                time.sleep(0.35 * (2 ** attempt))
+    return {}, last_error or "MiMo 批次审核失败"
+
+
+def run_semantic_batches(
+    config: dict[str, Any],
+    product: dict[str, Any],
+    batch_specs: list[tuple[int, list[dict[str, Any]]]],
+    concurrency: int,
+    request_json: SemanticRequester,
+    *,
+    retries: int | None = None,
+) -> tuple[dict[int, tuple[dict[int, dict[str, Any]], str | None]], int]:
+    """Run network-bound batches concurrently while leaving SQLite writes to the caller."""
+
+    if not batch_specs:
+        return {}, 0
+    worker_count = min(max(1, concurrency), len(batch_specs))
+    batch_results: dict[int, tuple[dict[int, dict[str, Any]], str | None]] = {}
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mimo-review") as executor:
+        futures = {
+            executor.submit(
+                run_semantic_batch,
+                config,
+                product,
+                candidates,
+                request_json,
+                retries=retries,
+            ): batch_index
+            for batch_index, candidates in batch_specs
+        }
+        for future in as_completed(futures):
+            batch_index = futures[future]
+            try:
+                batch_results[batch_index] = future.result()
+            except Exception as error:  # defensive guard around worker execution
+                batch_results[batch_index] = ({}, semantic_batch_error(error))
+    return batch_results, worker_count
 
 
 def semantic_review_signature(product: dict[str, Any], candidate: dict[str, Any]) -> str:
