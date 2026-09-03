@@ -405,9 +405,10 @@ def _upsert_keyword_source(connection: Any, keyword_id: int, product_id: int, as
 
 def _update_automatic_analysis(connection: Any, product_id: int, product: dict[str, Any]) -> None:
     rows = [dict(row) for row in connection.execute("SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchall()]
+    competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (product_id,)).fetchone()[0])
     safe_terms, conflicts = compute_safe_negative_phrase_terms(rows, product)
     for row in rows:
-        metric = row
+        metric = {**row, "competitor_total": competitor_total}
         fields = _analysis_fields(row["keyword_raw"], product, metric, safe_terms=safe_terms, negative_conflicts=conflicts)
         connection.execute(
             """UPDATE keywords SET category_auto = ?, category_confidence = ?, classification_reason_json = ?,
@@ -448,6 +449,9 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                     continue
                 normalized = normalize_keyword(keyword_raw)
                 metric = parse_metric_values(parsed_row)
+                # Use the current workbook's complete competitor set as the
+                # denominator for the relevance ratio during first-pass rules.
+                metric["competitor_total"] = len(parsed.source_asins)
                 analysis = _analysis_fields(keyword_raw, product, metric)
                 existing = connection.execute("SELECT id, manual_locked FROM keywords WHERE product_id = ? AND site = ? AND keyword_normalized = ?", (product_id, product.get("site") or "US", normalized)).fetchone()
                 values = {
@@ -484,6 +488,15 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                         _upsert_source_asin(connection, product_id, asin, import_id, timestamp)
 
             _update_automatic_analysis(connection, product_id, product)
+            # A product is created in ``preparing`` state because its keyword
+            # workbook is optional at first.  Move it to active only after a
+            # valid import actually contributes keyword rows; an empty or
+            # header-only workbook must not fabricate readiness or ASIN data.
+            if counts["inserted"] + counts["updated"] > 0:
+                connection.execute(
+                    "UPDATE products SET status = 'active', updated_at = ? WHERE id = ? AND status != 'archived'",
+                    (now_iso(), product_id),
+                )
             connection.execute(
                 """UPDATE imports SET status = 'success', inserted_rows = ?, updated_rows = ?, skipped_rows = ?,
                    error_rows = ?, error_details_json = ?, completed_at = ? WHERE id = ?""",

@@ -85,3 +85,6 @@ class SemanticReviewRequest(BaseModel):
     # Only independent network calls run concurrently. Database writes remain
     # deterministic and single-threaded in route orchestration.
     concurrency: int = Field(default=4, ge=1, le=8)
+    # The UI uses a background job so progress remains queryable after a page
+    # refresh.  The default stays synchronous for existing API clients/tests.
+    background: bool = False

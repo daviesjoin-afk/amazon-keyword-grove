@@ -1,6 +1,7 @@
 import { ArrowUpRight, CheckCircle2, ChevronRight, CircleHelp, Database, FileCheck2, Hash, Layers3, Megaphone, ShieldAlert, Sparkles, Target, TrendingUp, UsersRound } from 'lucide-react'
 import type { ImportBatch, KeywordRecord, Product } from '../types'
 import { ActionPill, MatchPill } from './StatusPill'
+import { relevanceRatio } from '../keywordMetrics'
 
 interface OverviewPanelProps {
   product: Product
@@ -12,6 +13,8 @@ interface OverviewPanelProps {
 }
 
 export function OverviewPanel({ product, keywords, batches, onOpenKeywords, onOpenImport, onSelectKeyword }: OverviewPanelProps) {
+  const competitorCount = Math.max(0, product.sourceCount)
+  const strongShare = product.keywordTotal ? Math.round(product.strongCount / product.keywordTotal * 100) : 0
   const rootCounts = new Map<string, number>()
   keywords.forEach((keyword) => rootCounts.set(keyword.root, (rootCounts.get(keyword.root) || 0) + 1))
   const displayRoots = [
@@ -49,7 +52,7 @@ export function OverviewPanel({ product, keywords, batches, onOpenKeywords, onOp
         <div className="hero-copy">
           <div className="eyebrow"><span className="eyebrow-line" />竞品反查项目 / US</div>
           <h1>{product.name}</h1>
-          <p>以 20 个竞品 ASIN 建立关键词基线，优先识别可承接的高意图词，再把探索流量与否定风险分开管理。</p>
+          <p>{competitorCount ? `以 ${competitorCount} 个竞品 ASIN 建立关键词基线，优先识别可承接的高意图词，再把探索流量与否定风险分开管理。` : '尚未导入竞品关键词表。录入文件后建立关键词基线，再把探索流量与否定风险分开管理。'}</p>
           <div className="product-context-row">
             <span className="context-token"><span className="token-label">参考 ASIN</span><code>{product.referenceAsin}</code></span>
             <span className="context-token"><span className="token-label">站点</span>{product.site}</span>
@@ -64,15 +67,15 @@ export function OverviewPanel({ product, keywords, batches, onOpenKeywords, onOp
           <div className="grove-ring grove-ring-back" />
           <div className="grove-ring grove-ring-front" />
           <span className="grove-leaf leaf-a" /><span className="grove-leaf leaf-b" /><span className="grove-leaf leaf-c" />
-          <div className="grove-core"><span>20</span><small>竞品 ASIN</small></div>
+          <div className="grove-core"><span>{competitorCount || '—'}</span><small>竞品 ASIN</small></div>
           <div className="grove-legend"><span><i className="legend-dot legend-green" />覆盖来源</span><span><i className="legend-dot legend-navy" />关键词资产</span></div>
         </div>
       </section>
 
       <section className="metric-strip" aria-label="词库关键指标">
         <MetricCard label="关键词总量" value={product.keywordTotal.toLocaleString('en-US')} note="去重后" icon={<Hash size={16} />} accent="green" />
-        <MetricCard label="强匹配" value={product.strongCount.toLocaleString('en-US')} note={`${Math.round(product.strongCount / product.keywordTotal * 100)}% 的词库`} icon={<CheckCircle2 size={16} />} accent="green" />
-        <MetricCard label="竞品覆盖" value={`${product.sourceCount} / 20`} note="本批次来源 ASIN" icon={<UsersRound size={16} />} accent="navy" />
+        <MetricCard label="强匹配" value={product.strongCount.toLocaleString('en-US')} note={`${strongShare}% 的词库`} icon={<CheckCircle2 size={16} />} accent="green" />
+        <MetricCard label="竞品覆盖" value={competitorCount ? competitorCount.toLocaleString('en-US') : '—'} note={competitorCount ? '本批次来源 ASIN' : '尚未导入来源'} icon={<UsersRound size={16} />} accent="navy" />
         <MetricCard label="数据完整度" value={`${product.importHealth}%`} note="关键指标可用" icon={<FileCheck2 size={16} />} accent="amber" />
       </section>
 
@@ -113,7 +116,7 @@ export function OverviewPanel({ product, keywords, batches, onOpenKeywords, onOp
           </div>
           <div className="mini-keyword-list">
             {topKeywords.map((keyword) => <button className="mini-keyword-row" type="button" key={keyword.id} onClick={() => onSelectKeyword(keyword)}>
-              <div><strong>{keyword.keyword}</strong><span>{keyword.relevanceReason}</span></div><div className="mini-keyword-score"><b>{keyword.relevanceScore}</b><small>相关性</small></div>
+              <div><strong>{keyword.keyword}</strong><span>{keyword.relevanceReason}</span></div><div className="mini-keyword-score"><b>{relevanceRatio(keyword)}</b><small>相关性</small></div>
             </button>)}
           </div>
           <button className="panel-link-row" type="button" onClick={onOpenKeywords}>打开强匹配筛选 <ArrowUpRight size={14} /></button>

@@ -246,6 +246,15 @@ def init_db() -> None:
         # The reason prefix was the previous durable marker and is safe to
         # backfill once during migration.
         connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = COALESCE(semantic_reviewed_at, updated_at) WHERE semantic_reviewed = 0 AND advice_reason LIKE 'MiMo 语义审核：%'")
+        # Product workspaces created before import-status persistence could
+        # remain in ``preparing`` forever even though they already contain a
+        # keyword library.  Resolve only those legacy rows; empty new products
+        # stay in preparation until their first valid workbook import.
+        connection.execute(
+            """UPDATE products SET status = 'active'
+               WHERE status = 'preparing' AND deleted_at IS NULL
+                 AND EXISTS (SELECT 1 FROM keywords k WHERE k.product_id = products.id AND k.deleted_at IS NULL)""",
+        )
         connection.commit()
 
 

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -54,6 +55,8 @@ def test_relevance_and_safe_ad_recommendation_rules():
     long_tail = analyze_keyword("boxwood wreath for front door", product)
     long_tail_advice = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000}, product)
     assert long_tail_advice["action"] == "exact"
+    low_coverage_core = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000, "related_product_count": 5, "competitor_total": 20}, product)
+    assert low_coverage_core["action"] == "observe"
 
     product["excluded_terms"] = ["iphone case"]
     conflict = analyze_keyword("iphone case", product)
@@ -114,6 +117,8 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
         json={"name": "Boxwood test product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath", "front door wreath"]},
     )
     assert response.status_code == 201, response.text
+    assert response.json()["status"] == "preparing"
+    assert response.json()["source_asin_count"] == 0
     product_id = response.json()["id"]
     rows = [
         ["关键词", "相关ASIN", "PPC竞价", "流量占比", "流量词类型", "月搜索量", "ABA周排名"],
@@ -127,12 +132,17 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
     assert result["inserted_rows"] == 2
     assert result["updated_rows"] == 1
     assert len(result["source_asins"]) == 2
+    refreshed_product = client.get(f"/api/products/{product_id}").json()
+    assert refreshed_product["status"] == "active"
+    assert refreshed_product["source_asin_count"] == 2
 
     listing = client.get(f"/api/products/{product_id}/keywords", params={"search": "room", "page_size": 10})
     assert listing.status_code == 200
     assert listing.json()["total"] == 1
     keyword = listing.json()["items"][0]
     assert keyword["ppc_bid"] is not None
+    assert keyword["competitor_coverage"] == 2
+    assert keyword["competitor_total"] == 2
     # The second row's anomaly was followed by a valid update; inspect history
     # to prove it was retained as raw data and never interpreted as a bid.
     detail = client.get(f"/api/products/{product_id}/keywords/{keyword['id']}")
@@ -161,6 +171,9 @@ def test_product_crud_and_soft_delete(client):
     created = client.post("/api/products", json={"name": "CRUD product", "site": "US"})
     assert created.status_code == 201
     assert created.json()["core_terms"] == []
+    assert created.json()["status"] == "preparing"
+    assert created.json()["keyword_count"] == 0
+    assert created.json()["source_asin_count"] == 0
     product_id = created.json()["id"]
     updated = client.patch(f"/api/products/{product_id}", json={"name": "CRUD renamed", "status": "active"})
     assert updated.status_code == 200
@@ -273,6 +286,41 @@ def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monke
     assert reviewed.status_code == 200, reviewed.text
     result = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 10}).json()["items"][0]
     assert result["suggested_action"] == "observe"
+
+
+def test_background_semantic_review_reports_refresh_safe_progress(client, monkeypatch):
+    configured = client.put(
+        "/api/ai-config",
+        json={"provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-progress", "enabled": True},
+    )
+    assert configured.status_code == 200
+    created = client.post("/api/products", json={"name": "Progress review product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
+    product_id = created.json()["id"]
+    rows = [["关键词", "相关ASIN", "月搜索量"]] + [[f"boxwood wreath progress {index}", "B0TEST0001", 500 + index] for index in range(11)]
+    imported = client.post(f"/api/products/{product_id}/imports", files={"file": ("progress.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert imported.status_code == 200, imported.text
+
+    def fake_ai(_config, request_payload):
+        time.sleep(0.02)
+        candidates = json.loads(request_payload["messages"][1]["content"])["candidates"]
+        return {"reviews": [{"id": item["id"], "decision": "exact", "relevance_score": 90, "confidence": 0.9, "reason_zh": "进度测试"} for item in candidates]}
+
+    monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
+    started = client.post(f"/api/products/{product_id}/semantic-review", json={"background": True, "batch_size": 10, "concurrency": 1})
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] in {"running", "completed"}
+    final_status = started.json()
+    for _ in range(80):
+        final_status = client.get(f"/api/products/{product_id}/semantic-review/status").json()
+        if final_status["status"] in {"completed", "partial", "failed"}:
+            break
+        time.sleep(0.025)
+    assert final_status["status"] == "completed"
+    assert final_status["reviewed"] == 11
+    assert final_status["total"] == 11
+    assert final_status["pending"] == 0
+    assert final_status["batches_total"] == 2
+    assert final_status["batches_completed"] == 2
 
 
 @pytest.mark.skipif(not os.getenv("SELLER_SPRITE_FIXTURE"), reason="set SELLER_SPRITE_FIXTURE to run the real workbook acceptance test")

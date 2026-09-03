@@ -1,6 +1,8 @@
 import { CheckCircle2, Download, Eye, FileDown, Megaphone, RefreshCw, ShieldAlert, Target, Waves } from 'lucide-react'
+import type { SemanticReviewStatus } from '../api/client'
 import type { KeywordRecord, Product, SuggestedAction } from '../types'
 import { ConfidencePill } from './StatusPill'
+import { relevanceRatio } from '../keywordMetrics'
 
 interface AdRecommendationsProps {
   product: Product
@@ -8,6 +10,7 @@ interface AdRecommendationsProps {
   onSelectKeyword: (keyword: KeywordRecord) => void
   onSemanticReview: () => Promise<void>
   semanticReviewing: boolean
+  reviewProgress: SemanticReviewStatus | null
 }
 
 type RecommendationGroup = {
@@ -26,16 +29,17 @@ const groups: RecommendationGroup[] = [
   { key: '否定词组', title: '否定词组', eyebrow: 'Negative phrase', description: '同一无效词根已通过误伤检查，仍需人工确认后使用。', icon: ShieldAlert, tone: 'negative-phrase' },
 ]
 
-export function AdRecommendations({ product, keywords, onSelectKeyword, onSemanticReview, semanticReviewing }: AdRecommendationsProps) {
-  const total = keywords.length
-  const pending = keywords.filter((keyword) => !keyword.semanticReviewed).length
-  const reviewed = keywords.length - pending
+export function AdRecommendations({ product, keywords, onSelectKeyword, onSemanticReview, semanticReviewing, reviewProgress }: AdRecommendationsProps) {
+  const productReview = reviewProgress && String(reviewProgress.product_id) === product.id ? reviewProgress : null
+  const total = productReview?.total ?? keywords.length
+  const pending = productReview?.pending ?? keywords.filter((keyword) => !keyword.semanticReviewed).length
+  const reviewed = productReview?.reviewed ?? total - pending
   const pendingBroad = keywords.filter((keyword) => !keyword.semanticReviewed && keyword.suggestedAction === '广泛探索').length
   const pendingNegativePhrase = keywords.filter((keyword) => !keyword.semanticReviewed && keyword.suggestedAction === '否定词组').length
 
   function download(group: RecommendationGroup, rows: KeywordRecord[]) {
-    const headers = ['关键词', '相关性', '置信度', '风险', '理由', '竞品覆盖', '月搜索量']
-    const values = rows.map((item) => [item.keyword, item.relevanceScore, item.confidence, item.risk, item.suggestionReason, `${item.competitorCoverage}/${item.competitorTotal}`, item.monthlySearchVolume ?? ''])
+    const headers = ['关键词', '相关性（竞品占比）', '语义评分', '置信度', '风险', '理由', '月搜索量']
+    const values = rows.map((item) => [item.keyword, relevanceRatio(item), item.relevanceScore, item.confidence, item.risk, item.suggestionReason, item.monthlySearchVolume ?? ''])
     const csv = [headers, ...values].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n')
     const link = document.createElement('a')
     link.href = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
@@ -47,9 +51,9 @@ export function AdRecommendations({ product, keywords, onSelectKeyword, onSemant
   return <div className="ad-recommendation-page">
     <header className="ad-recommendation-head">
       <div><span className="panel-kicker">Advertising playbook / 双重审核</span><h1>广告建议</h1><p>内置规则先筛选，MiMo 再结合标题、五点和词根做语义复核。这里仅展示可导出的最终动作草稿。</p></div>
-      <div className="ad-recommendation-actions"><button className="button button-primary compact-button" type="button" disabled={semanticReviewing || pending === 0} title="只审核尚未完成 MiMo 二审的新增关键词，不重复调用已审核结果" onClick={() => void onSemanticReview()}><RefreshCw size={15} />{semanticReviewing ? '增量审核中…' : pending ? '增量审核' : '已全部审核'}</button><div className="ad-review-status"><span className={pending ? 'status-dot status-dot-pending' : 'status-dot status-dot-live'} /><strong>已审核 {reviewed.toLocaleString('en-US')} / {total.toLocaleString('en-US')}</strong><span>{pending ? `待 MiMo 二审 ${pending.toLocaleString('en-US')} 条` : '双重审核完成，已形成建议'}</span></div></div>
+      <div className="ad-recommendation-actions"><button className="button button-primary compact-button" type="button" disabled={semanticReviewing || pending === 0} title="一次处理全部尚未完成 MiMo 二审的关键词；服务端按 40 条一批并发调用，不重复审核已完成结果" onClick={() => void onSemanticReview()}><RefreshCw size={15} />{semanticReviewing ? '增量审核中…' : pending ? '增量审核' : '已全部审核'}</button><div className="ad-review-status"><span className={pending ? 'status-dot status-dot-pending' : 'status-dot status-dot-live'} /><strong>已审核 {reviewed.toLocaleString('en-US')} / {total.toLocaleString('en-US')}</strong><span>{semanticReviewing && productReview ? `正在处理第 ${Math.min(productReview.batches_completed + 1, productReview.batches_total)} / ${productReview.batches_total} 批（已完成 ${productReview.batches_completed} 批）` : productReview?.status === 'partial' ? `审核完成但有 ${productReview.failed_batches.length} 批失败，可继续增量重试` : productReview?.status === 'failed' ? `审核失败：${productReview.error || '请检查 AI 设置'}` : pending ? `待 MiMo 二审 ${pending.toLocaleString('en-US')} 条` : '双重审核完成，已形成建议'}</span></div></div>
     </header>
-    {pending > 0 && <div className="ad-pending-banner"><Eye size={17} /><span>当前还有 <strong>{pending.toLocaleString('en-US')}</strong> 条只有内置规则预审，暂不进入四类导出清单。规则预审已标出 <strong>{pendingBroad.toLocaleString('en-US')}</strong> 条广泛候选、<strong>{pendingNegativePhrase.toLocaleString('en-US')}</strong> 条否定词组候选；返回工作台点击“MiMo 全量审核”后刷新本页。</span></div>}
+    {pending > 0 && <div className="ad-pending-banner"><Eye size={17} /><span>{semanticReviewing && productReview ? <>MiMo 正在审核：已完成 <strong>{productReview.batches_completed}</strong> / <strong>{productReview.batches_total}</strong> 批，已审核 <strong>{reviewed.toLocaleString('en-US')} / {total.toLocaleString('en-US')}</strong>。页面刷新后会自动恢复进度。</> : <>当前还有 <strong>{pending.toLocaleString('en-US')}</strong> 条只有内置规则预审，暂不进入四类导出清单。规则预审已标出 <strong>{pendingBroad.toLocaleString('en-US')}</strong> 条广泛候选、<strong>{pendingNegativePhrase.toLocaleString('en-US')}</strong> 条否定词组候选；点击“增量审核”可继续处理。</>}</span></div>}
     <div className="ad-recommendation-grid">
       {groups.map((group) => {
         const rows = keywords.filter((item) => item.suggestedAction === group.key && item.semanticReviewed).sort((left, right) => (right.monthlySearchVolume ?? -1) - (left.monthlySearchVolume ?? -1))
@@ -58,7 +62,7 @@ export function AdRecommendations({ product, keywords, onSelectKeyword, onSemant
           <div className="ad-card-head"><div className="ad-card-title"><span className="ad-card-icon"><Icon size={17} /></span><div><span className="panel-kicker">{group.eyebrow}</span><h2>{group.title}</h2></div></div><button className="icon-button small" type="button" title={`下载${group.title}建议`} aria-label={`下载${group.title}建议`} onClick={() => download(group, rows)}><Download size={15} /></button></div>
           <p className="ad-card-description">{group.description}</p>
           <div className="ad-card-meta"><strong>{rows.length.toLocaleString('en-US')}</strong><span>条建议词</span><button className="text-button" type="button" onClick={() => download(group, rows)}><FileDown size={13} />下载 CSV</button></div>
-          <div className="ad-suggestion-list">{rows.length ? rows.map((item) => <button className="ad-suggestion-row" type="button" key={item.id} onClick={() => onSelectKeyword(item)}><span className="ad-suggestion-main"><strong>{item.keyword}</strong><small>{item.suggestionReason.replace(/^MiMo 语义审核：/, '')}</small></span><span className="ad-suggestion-metric"><b>{item.relevanceScore}</b><small>相关性</small></span><ConfidencePill value={item.confidence} /></button>) : <div className="ad-empty"><CheckCircle2 size={17} /><span>{pending > 0 ? '完成 MiMo 二审后，符合条件的建议会显示在这里。' : '本次双重审核没有通过该动作的安全门槛，当前无可导出建议词。'}</span></div>}</div>
+          <div className="ad-suggestion-list">{rows.length ? rows.map((item) => <button className="ad-suggestion-row" type="button" key={item.id} onClick={() => onSelectKeyword(item)}><span className="ad-suggestion-main"><strong>{item.keyword}</strong><small>{item.suggestionReason.replace(/^MiMo 语义审核：/, '')}</small></span><span className="ad-suggestion-metric"><b>{relevanceRatio(item)}</b><small>相关性</small></span><ConfidencePill value={item.confidence} /></button>) : <div className="ad-empty"><CheckCircle2 size={17} /><span>{pending > 0 ? '完成 MiMo 二审后，符合条件的建议会显示在这里。' : '本次双重审核没有通过该动作的安全门槛，当前无可导出建议词。'}</span></div>}</div>
         </section>
       })}
     </div>

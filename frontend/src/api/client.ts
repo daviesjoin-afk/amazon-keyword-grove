@@ -4,6 +4,39 @@ import type { AIConfig, AIConfigPayload, ApiResult, FieldMapping, ImportBatch, K
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765/api'
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
+export interface SemanticReviewResult {
+  product_id?: number
+  status?: SemanticReviewStatus['status']
+  total?: number
+  pending?: number
+  batches_total?: number
+  batches_completed?: number
+  successful_batches?: number
+  reviewed: number
+  batches: number
+  failed_batches?: Array<{ batch: number; count: number; error: string }>
+  partial?: boolean
+  concurrency?: number
+  already_reviewed?: boolean
+  items: Array<Record<string, unknown>>
+}
+
+export interface SemanticReviewStatus {
+  product_id: number
+  status: 'idle' | 'running' | 'completed' | 'partial' | 'failed'
+  reviewed: number
+  total: number
+  pending: number
+  batches_total: number
+  batches_completed: number
+  successful_batches: number
+  failed_batches: Array<{ batch: number; count: number; error: string }>
+  started_at?: string | null
+  updated_at?: string | null
+  completed_at?: string | null
+  error?: string | null
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -23,7 +56,8 @@ export interface KeywordApi {
   updateProduct(productId: string, payload: ProductCopyPayload): Promise<ApiResult<Product>>
   getAIConfig(): Promise<AIConfig>
   saveAIConfig(payload: AIConfigPayload): Promise<AIConfig>
-  semanticReview(productId: string, limit?: number): Promise<{ reviewed: number; batches: number; already_reviewed?: boolean; items: Array<Record<string, unknown>> }>
+  semanticReview(productId: string, limit?: number, background?: boolean): Promise<SemanticReviewResult>
+  getSemanticReviewStatus(productId: string): Promise<SemanticReviewStatus>
   importFile(productId: string, file: File): Promise<Record<string, unknown>>
 }
 
@@ -44,6 +78,7 @@ function normalizeAIConfig(item: Record<string, unknown>): AIConfig {
 
 function normalizeProduct(item: BackendProduct, stats?: Record<string, unknown>): Product {
   const byStrength = (stats?.by_match_strength || {}) as Record<string, number>
+  const sourceCount = Number(stats?.source_asins ?? item.source_asin_count ?? 0)
   const savedCoreTerms = Array.isArray(item.core_terms) ? item.core_terms.map((term) => String(term).trim().toLowerCase()).filter(Boolean) : []
   const title = String(item.product_title || '').toLowerCase()
   const coreTerms = [...new Set(savedCoreTerms)]
@@ -54,16 +89,16 @@ function normalizeProduct(item: BackendProduct, stats?: Record<string, unknown>)
   const roots = [...new Set([...coreTerms, ...supportingRoots])]
   return {
     id: String(item.id), name: String(item.name || '未命名产品'), selfAsin: item.asin ? String(item.asin) : undefined,
-    referenceAsin: '竞品集合', site: String(item.site || 'US'), language: String(item.language || 'en_US'), category: String(item.category || '未分类'),
+    referenceAsin: sourceCount > 0 ? '竞品集合' : '尚未导入', site: String(item.site || 'US'), language: String(item.language || 'en_US'), category: String(item.category || '未分类'),
     status: item.status === 'archived' ? '归档' : item.status === 'preparing' ? '准备中' : '在售', title: String(item.product_title || ''),
     bullets: (item.bullet_points || []) as string[], keywordTotal: Number(stats?.total_keywords ?? item.keyword_count ?? 0),
     strongCount: Number(byStrength.strong ?? item.strong_keyword_count ?? 0), mediumCount: Number(byStrength.medium ?? 0), weakCount: Number(byStrength.weak ?? 0),
-    sourceCount: Number(stats?.source_asins ?? item.source_asin_count ?? 0), lastImportedAt: String(item.updated_at || '尚未导入'), importHealth: 100,
+    sourceCount, lastImportedAt: String(item.updated_at || '尚未导入'), importHealth: 100,
     coreTerms, roots,
   }
 }
 
-function normalizeKeyword(item: BackendKeyword, rootCandidates: string[]): KeywordRecord {
+function normalizeKeyword(item: BackendKeyword, rootCandidates: string[], productCompetitorTotal = 0): KeywordRecord {
   const asins = (item.related_asins || []) as string[]
   const rawTraffic = (item.traffic_types || []) as string[]
   const match = strengthLabels[String(item.match_strength)] || '不相关'
@@ -74,11 +109,13 @@ function normalizeKeyword(item: BackendKeyword, rootCandidates: string[]): Keywo
   const root = [...rootCandidates]
     .sort((left, right) => right.length - left.length)
     .find((candidate) => normalizedText.includes(candidate)) || ((item.matched_terms || []) as string[])[0] || normalizedText.split(' ')[0] || '未分类'
+  const competitorCoverage = Number(item.competitor_coverage ?? item.related_product_count ?? asins.length)
+  const competitorTotal = Number(item.competitor_total ?? productCompetitorTotal)
   return {
     id: String(item.id), keyword: String(item.keyword_raw || item.keyword_normalized || ''), translation: String(item.keyword_translation || ''), match,
     relevanceScore: Number(item.relevance_score || 0), relevanceReason: ((item.classification_reason || []) as string[]).join('；') || String(item.advice_reason || ''),
     monthlySearchVolume: item.monthly_search_volume == null ? null : Number(item.monthly_search_volume), abaRank: item.aba_weekly_rank == null ? null : Number(item.aba_weekly_rank),
-    competitorCoverage: asins.length, competitorTotal: 20, trafficTypes: rawTraffic.map((value) => trafficLabels[value.toLowerCase()] || (value.includes('自然') ? '自然' : value.includes('SP') ? 'SP' : value.includes('品牌') ? '品牌' : value.includes('视频') ? '视频' : value.includes('HR') ? 'HR' : 'AC')),
+    competitorCoverage, competitorTotal, trafficTypes: rawTraffic.map((value) => trafficLabels[value.toLowerCase()] || (value.includes('自然') ? '自然' : value.includes('SP') ? 'SP' : value.includes('品牌') ? '品牌' : value.includes('视频') ? '视频' : value.includes('HR') ? 'HR' : 'AC')),
     root, category: String(item.category || '待确认'), intent: String(item.category || '待确认'),
     suggestedAction: action, suggestionReason: String(item.advice_reason || '数据不足，等待人工复核'), confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
     approvalStatus: item.manual_locked ? '已接受' : '待审批', notes: item.notes ? String(item.notes) : undefined, sourceAsins: asins,
@@ -104,7 +141,7 @@ export const api: KeywordApi = {
       if (page >= result.pages) break
       page += 1
     }
-    return { data: all.map((item) => normalizeKeyword(item, product?.roots || [])), source: 'api' }
+    return { data: all.map((item) => normalizeKeyword(item, product?.roots || [], product?.sourceCount || 0)), source: 'api' }
   },
   async getBatches(productId) {
     if (USE_MOCK) return { data: await mockApi.getBatches(), source: 'mock' }
@@ -141,10 +178,18 @@ export const api: KeywordApi = {
     const saved = await request<Record<string, unknown>>('/ai-config', { method: 'PUT', body: JSON.stringify({ provider: payload.provider, base_url: payload.baseUrl, model: payload.model, api_key: payload.apiKey || null, enabled: payload.enabled, timeout_seconds: payload.timeoutSeconds }) })
     return normalizeAIConfig(saved)
   },
-  async semanticReview(productId, limit) {
+  async semanticReview(productId, limit, background = false) {
     if (USE_MOCK) throw new Error('演示模式不调用 AI 语义审核')
-    const body = limit == null ? {} : { limit }
-    return request<{ reviewed: number; batches: number; items: Array<Record<string, unknown>> }>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
+    const body = { ...(limit == null ? {} : { limit }), background }
+    return request<SemanticReviewResult>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
+  },
+  async getSemanticReviewStatus(productId) {
+    if (USE_MOCK) {
+      const mockKeywords = await mockApi.getKeywords()
+      const total = mockKeywords.length
+      return { product_id: Number(productId) || 0, status: 'completed', reviewed: total, total, pending: 0, batches_total: 0, batches_completed: 0, successful_batches: 0, failed_batches: [] }
+    }
+    return request<SemanticReviewStatus>(`/products/${encodeURIComponent(productId)}/semantic-review/status`)
   },
   async importFile(productId, file) {
     const form = new FormData()
