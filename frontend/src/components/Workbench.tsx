@@ -28,7 +28,9 @@ interface WorkbenchProps {
 export function Workbench({ product, keywords, batches, onOpenImport, onSelectKeyword, onUpdateKeywords, onSaveProduct, onExport, onSemanticReview, semanticReviewing, reviewProgress }: WorkbenchProps) {
   const [tab, setTab] = useState<WorkbenchTab>('overview')
   const hasKeywords = product.keywordTotal > 0 || keywords.length > 0
-  const reviewButtonLabel = semanticReviewing ? 'MiMo 审核中…' : hasKeywords ? 'MiMo 全量审核' : '暂无关键词'
+  const reviewButtonLabel = semanticReviewing && reviewProgress
+    ? `MiMo 审核中 ${reviewProgress.reviewed.toLocaleString('en-US')} / ${reviewProgress.total.toLocaleString('en-US')}`
+    : hasKeywords ? 'MiMo 全量审核' : '暂无关键词'
   const reviewButtonTitle = hasKeywords
     ? '发送当前产品资料与全部关键词到 MiMo，分批生成投放和否词草稿；人工锁定结果只记录审核不覆盖'
     : '请先导入关键词表，再进行 MiMo 语义审核'
