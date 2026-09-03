@@ -4,6 +4,39 @@ import type { AIConfig, AIConfigPayload, ApiResult, FieldMapping, ImportBatch, K
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765/api'
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
+export interface SemanticReviewResult {
+  product_id?: number
+  status?: SemanticReviewStatus['status']
+  total?: number
+  pending?: number
+  batches_total?: number
+  batches_completed?: number
+  successful_batches?: number
+  reviewed: number
+  batches: number
+  failed_batches?: Array<{ batch: number; count: number; error: string }>
+  partial?: boolean
+  concurrency?: number
+  already_reviewed?: boolean
+  items: Array<Record<string, unknown>>
+}
+
+export interface SemanticReviewStatus {
+  product_id: number
+  status: 'idle' | 'running' | 'completed' | 'partial' | 'failed'
+  reviewed: number
+  total: number
+  pending: number
+  batches_total: number
+  batches_completed: number
+  successful_batches: number
+  failed_batches: Array<{ batch: number; count: number; error: string }>
+  started_at?: string | null
+  updated_at?: string | null
+  completed_at?: string | null
+  error?: string | null
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -23,7 +56,8 @@ export interface KeywordApi {
   updateProduct(productId: string, payload: ProductCopyPayload): Promise<ApiResult<Product>>
   getAIConfig(): Promise<AIConfig>
   saveAIConfig(payload: AIConfigPayload): Promise<AIConfig>
-  semanticReview(productId: string, limit?: number): Promise<{ reviewed: number; batches: number; already_reviewed?: boolean; items: Array<Record<string, unknown>> }>
+  semanticReview(productId: string, limit?: number, background?: boolean): Promise<SemanticReviewResult>
+  getSemanticReviewStatus(productId: string): Promise<SemanticReviewStatus>
   importFile(productId: string, file: File): Promise<Record<string, unknown>>
 }
 
@@ -144,10 +178,18 @@ export const api: KeywordApi = {
     const saved = await request<Record<string, unknown>>('/ai-config', { method: 'PUT', body: JSON.stringify({ provider: payload.provider, base_url: payload.baseUrl, model: payload.model, api_key: payload.apiKey || null, enabled: payload.enabled, timeout_seconds: payload.timeoutSeconds }) })
     return normalizeAIConfig(saved)
   },
-  async semanticReview(productId, limit) {
+  async semanticReview(productId, limit, background = false) {
     if (USE_MOCK) throw new Error('演示模式不调用 AI 语义审核')
-    const body = limit == null ? {} : { limit }
-    return request<{ reviewed: number; batches: number; items: Array<Record<string, unknown>> }>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
+    const body = { ...(limit == null ? {} : { limit }), background }
+    return request<SemanticReviewResult>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
+  },
+  async getSemanticReviewStatus(productId) {
+    if (USE_MOCK) {
+      const mockKeywords = await mockApi.getKeywords()
+      const total = mockKeywords.length
+      return { product_id: Number(productId) || 0, status: 'completed', reviewed: total, total, pending: 0, batches_total: 0, batches_completed: 0, successful_batches: 0, failed_batches: [] }
+    }
+    return request<SemanticReviewStatus>(`/products/${encodeURIComponent(productId)}/semantic-review/status`)
   },
   async importFile(productId, file) {
     const form = new FormData()

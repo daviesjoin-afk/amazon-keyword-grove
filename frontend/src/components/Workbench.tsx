@@ -1,5 +1,6 @@
 import { BrainCircuit, Download, FileClock, LayoutDashboard, Library, Megaphone, Settings2, Split, TreePine, Upload } from 'lucide-react'
 import { useState } from 'react'
+import type { SemanticReviewStatus } from '../api/client'
 import type { ImportBatch, KeywordRecord, Product, ProductCopyPayload } from '../types'
 import { ImportHistory } from './ImportHistory'
 import { KeywordLibrary } from './KeywordLibrary'
@@ -21,9 +22,10 @@ interface WorkbenchProps {
   onExport: () => void
   onSemanticReview: () => Promise<void>
   semanticReviewing: boolean
+  reviewProgress: SemanticReviewStatus | null
 }
 
-export function Workbench({ product, keywords, batches, onOpenImport, onSelectKeyword, onUpdateKeywords, onSaveProduct, onExport, onSemanticReview, semanticReviewing }: WorkbenchProps) {
+export function Workbench({ product, keywords, batches, onOpenImport, onSelectKeyword, onUpdateKeywords, onSaveProduct, onExport, onSemanticReview, semanticReviewing, reviewProgress }: WorkbenchProps) {
   const [tab, setTab] = useState<WorkbenchTab>('overview')
   const hasKeywords = product.keywordTotal > 0 || keywords.length > 0
   const reviewButtonLabel = semanticReviewing ? 'MiMo 审核中…' : hasKeywords ? 'MiMo 全量审核' : '暂无关键词'
@@ -43,7 +45,7 @@ export function Workbench({ product, keywords, batches, onOpenImport, onSelectKe
     {tab === 'overview' && <OverviewPanel product={product} keywords={keywords} batches={batches} onOpenKeywords={() => setTab('keywords')} onOpenImport={onOpenImport} onSelectKeyword={onSelectKeyword} />}
     {tab === 'keywords' && <KeywordLibrary product={product} keywords={keywords} onSelectKeyword={onSelectKeyword} onUpdateKeywords={onUpdateKeywords} onExport={onExport} />}
     {tab === 'roots' && <RootAnalysis product={product} keywords={keywords} onSelectKeyword={onSelectKeyword} />}
-    {tab === 'ads' && <AdRecommendations product={product} keywords={keywords} onSelectKeyword={onSelectKeyword} onSemanticReview={onSemanticReview} semanticReviewing={semanticReviewing} />}
+    {tab === 'ads' && <AdRecommendations product={product} keywords={keywords} onSelectKeyword={onSelectKeyword} onSemanticReview={onSemanticReview} semanticReviewing={semanticReviewing} reviewProgress={reviewProgress} />}
     {tab === 'imports' && <ImportHistory batches={batches} onOpenImport={onOpenImport} />}
     {tab === 'settings' && <ProductSettings product={product} onSaveProduct={onSaveProduct} />}
   </div>
