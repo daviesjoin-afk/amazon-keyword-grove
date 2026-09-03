@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0] - 2026-09-03
+
+### Added
+
+- MiMo semantic review now processes every pending keyword in one full or incremental click, using bounded concurrent batches with retry and partial-failure reporting.
+- Added review response metadata for successful/failed batches and the active concurrency level; failed batches remain pending for the next incremental retry.
+
 ## [Unreleased]
 
 ### Maintenance

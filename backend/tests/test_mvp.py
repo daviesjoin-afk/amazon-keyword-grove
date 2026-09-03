@@ -4,6 +4,8 @@ import io
 import json
 import os
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -234,23 +236,97 @@ def test_semantic_review_audits_every_keyword_in_batches(client, monkeypatch):
         return {"reviews": [{"id": item["id"], "decision": "exact", "relevance_score": 90, "confidence": 0.9, "reason_zh": "测试审核"} for item in candidates]}
 
     monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
-    reviewed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    reviewed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10, "concurrency": 1})
     assert reviewed.status_code == 200, reviewed.text
     assert reviewed.json()["reviewed"] == 11
     assert reviewed.json()["batches"] == 2
     assert calls == [10, 1]
     assert first_keywords == ["boxwood wreath 10", "boxwood wreath 0"]
-    skipped = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    skipped = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10, "concurrency": 1})
     assert skipped.status_code == 200
     assert skipped.json()["reviewed"] == 0
     assert skipped.json()["already_reviewed"] is True
     assert calls == [10, 1]
     changed = client.patch(f"/api/products/{product_id}", json={"product_title": TITLE + " Updated"})
     assert changed.status_code == 200
-    rerun = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    rerun = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10, "concurrency": 1})
     assert rerun.status_code == 200
     assert rerun.json()["reviewed"] == 11
     assert calls == [10, 1, 10, 1]
+
+
+def test_semantic_review_processes_all_pending_batches_concurrently(client, monkeypatch):
+    configured = client.put(
+        "/api/ai-config",
+        json={"provider": "mimo", "base_url": "https://api.example.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-concurrent", "enabled": True},
+    )
+    assert configured.status_code == 200
+    created = client.post("/api/products", json={"name": "Concurrent review product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
+    product_id = created.json()["id"]
+    rows = [["关键词", "相关ASIN", "月搜索量"]] + [[f"boxwood wreath batch {index}", "B0TEST0001", 500 + index] for index in range(25)]
+    imported = client.post(f"/api/products/{product_id}/imports", files={"file": ("concurrent.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert imported.status_code == 200, imported.text
+
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+
+    def fake_ai(_config, request_payload):
+        nonlocal active, max_active
+        candidates = json.loads(request_payload["messages"][1]["content"])["candidates"]
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.04)
+        with active_lock:
+            active -= 1
+        return {"reviews": [{"id": item["id"], "decision": "exact", "relevance_score": 90, "confidence": 0.9, "reason_zh": "并发测试"} for item in candidates]}
+
+    monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
+    reviewed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10, "concurrency": 3})
+    assert reviewed.status_code == 200, reviewed.text
+    result = reviewed.json()
+    assert result["reviewed"] == 25
+    assert result["batches"] == 3
+    assert result["successful_batches"] == 3
+    assert result["failed_batches"] == []
+    assert result["partial"] is False
+    assert result["concurrency"] == 3
+    assert max_active >= 2
+
+    pending = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 100}).json()
+    assert all(item["semantic_reviewed"] == 1 for item in pending["items"])
+
+
+def test_semantic_review_keeps_successful_batches_when_one_batch_fails(client, monkeypatch):
+    configured = client.put(
+        "/api/ai-config",
+        json={"provider": "mimo", "base_url": "https://api.example.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-partial", "enabled": True},
+    )
+    assert configured.status_code == 200
+    created = client.post("/api/products", json={"name": "Partial review product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
+    product_id = created.json()["id"]
+    rows = [["关键词", "相关ASIN", "月搜索量"]] + [[f"boxwood wreath partial {index}", "B0TEST0001", 500 + index] for index in range(20)]
+    imported = client.post(f"/api/products/{product_id}/imports", files={"file": ("partial.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert imported.status_code == 200, imported.text
+
+    def fake_ai(_config, request_payload):
+        candidates = json.loads(request_payload["messages"][1]["content"])["candidates"]
+        if any("partial 10" in item["keyword"] for item in candidates):
+            raise RuntimeError("simulated batch failure")
+        return {"reviews": [{"id": item["id"], "decision": "exact", "relevance_score": 90, "confidence": 0.9, "reason_zh": "部分失败测试"} for item in candidates]}
+
+    monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
+    monkeypatch.setattr(main_module, "SEMANTIC_REVIEW_RETRIES", 1)
+    reviewed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10, "concurrency": 2})
+    assert reviewed.status_code == 200, reviewed.text
+    result = reviewed.json()
+    assert result["reviewed"] == 10
+    assert result["batches"] == 2
+    assert result["successful_batches"] == 1
+    assert result["partial"] is True
+    assert len(result["failed_batches"]) == 1
+    assert result["failed_batches"][0]["count"] == 10
 
 
 def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monkeypatch):

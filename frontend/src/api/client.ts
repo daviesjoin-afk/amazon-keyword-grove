@@ -4,6 +4,17 @@ import type { AIConfig, AIConfigPayload, ApiResult, FieldMapping, ImportBatch, K
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765/api'
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
+export interface SemanticReviewResult {
+  reviewed: number
+  batches: number
+  successful_batches?: number
+  failed_batches?: Array<{ batch: number; count: number; error: string }>
+  partial?: boolean
+  concurrency?: number
+  already_reviewed?: boolean
+  items: Array<Record<string, unknown>>
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -23,7 +34,7 @@ export interface KeywordApi {
   updateProduct(productId: string, payload: ProductCopyPayload): Promise<ApiResult<Product>>
   getAIConfig(): Promise<AIConfig>
   saveAIConfig(payload: AIConfigPayload): Promise<AIConfig>
-  semanticReview(productId: string, limit?: number): Promise<{ reviewed: number; batches: number; already_reviewed?: boolean; items: Array<Record<string, unknown>> }>
+  semanticReview(productId: string, limit?: number): Promise<SemanticReviewResult>
   importFile(productId: string, file: File): Promise<Record<string, unknown>>
 }
 
@@ -144,7 +155,7 @@ export const api: KeywordApi = {
   async semanticReview(productId, limit) {
     if (USE_MOCK) throw new Error('演示模式不调用 AI 语义审核')
     const body = limit == null ? {} : { limit }
-    return request<{ reviewed: number; batches: number; items: Array<Record<string, unknown>> }>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
+    return request<SemanticReviewResult>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
   },
   async importFile(productId, file) {
     const form = new FormData()

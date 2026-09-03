@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import io
 import json
 import math
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -23,7 +25,7 @@ from .schemas import AIConfigUpdate, KeywordUpdate, ProductCreate, ProductUpdate
 from .utils import clean_text, dumps, loads, now_iso, tokens
 
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 # Bumped when the local recommendation policy changes.  Existing decisions are
 # invalidated by the migration/reanalysis script so they cannot silently mix
 # the old exact-only root policy with the broad-root policy.
@@ -457,6 +459,69 @@ def _is_short_generic_query(keyword: str, product: dict[str, Any]) -> bool:
     return not words.intersection(core_tokens)
 
 
+SEMANTIC_REVIEW_RETRIES = 3
+
+
+def _semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build one bounded MiMo request so batches can run independently."""
+
+    return {
+        "model": clean_text(config.get("model")),
+        "response_format": {"type": "json_object"},
+        "reasoning": {"effort": "none"},
+        "messages": [
+            {"role": "system", "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe."},
+            {"role": "user", "content": json.dumps({"product_title": product.get("product_title"), "bullet_points": product.get("bullet_points", []), "core_terms": product.get("core_terms", []), "task": "Double-audit every candidate using the product copy plus the local rule evidence. Relevant long-tail terms must be exact targeting. Broad is allowed only for an exact core term. Return {reviews:[{id,decision,relevance_score,confidence,reason_zh,negative_phrase_root?}]}. Scores are 0-100. Do not omit any candidate id.", "candidates": candidates}, ensure_ascii=False)},
+        ],
+        "max_completion_tokens": min(5000, 90 * len(candidates)),
+        "stream": False,
+    }
+
+
+def _semantic_batch_error(error: Exception) -> str:
+    """Return a short, non-secret error suitable for the review summary."""
+
+    if isinstance(error, HTTPException):
+        detail = error.detail
+        if isinstance(detail, dict):
+            return clean_text(detail.get("message") or detail.get("code"))[:240] or f"HTTP {error.status_code}"
+        return clean_text(detail)[:240] or f"HTTP {error.status_code}"
+    return clean_text(str(error))[:240] or error.__class__.__name__
+
+
+def _run_semantic_batch(config: dict[str, Any], product: dict[str, Any], candidates: list[dict[str, Any]]) -> tuple[dict[int, dict[str, Any]], str | None]:
+    """Call MiMo with bounded retries and verify every candidate is returned."""
+
+    expected_ids = {item["id"] for item in candidates}
+    prompt = _semantic_batch_prompt(config, product, candidates)
+    last_error = ""
+    for attempt in range(SEMANTIC_REVIEW_RETRIES):
+        try:
+            result = _ai_json_response(config, prompt)
+            reviews = result.get("reviews") if isinstance(result, dict) else None
+            if not isinstance(reviews, list):
+                raise ValueError("模型审核结果缺少 reviews 列表")
+            reviews_by_id: dict[int, dict[str, Any]] = {}
+            for review in reviews:
+                if not isinstance(review, dict):
+                    continue
+                try:
+                    review_id = int(review.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if review_id in expected_ids:
+                    reviews_by_id[review_id] = review
+            missing_ids = expected_ids.difference(reviews_by_id)
+            if missing_ids:
+                raise ValueError(f"模型未返回全部关键词审核结果，缺少 {len(missing_ids)} 条")
+            return reviews_by_id, None
+        except Exception as error:  # keep other batches running when one request fails
+            last_error = _semantic_batch_error(error)
+            if attempt + 1 < SEMANTIC_REVIEW_RETRIES:
+                time.sleep(0.35 * (2 ** attempt))
+    return {}, last_error or "MiMo 批次审核失败"
+
+
 @app.post("/api/products/{product_id}/semantic-review")
 def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
     """Run the local-rule candidates through MiMo in batches for full review."""
@@ -488,36 +553,32 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
     actions = {"exact", "broad", "negative_exact", "negative_phrase", "observe"}
     applied: list[dict[str, Any]] = []
     core_terms = [clean_text(term).casefold() for term in product.get("core_terms", [])]
-    for batch_start in range(0, len(all_candidates), payload.batch_size):
-        candidates = all_candidates[batch_start:batch_start + payload.batch_size]
-        prompt = {
-            "model": clean_text(config.get("model")),
-            "response_format": {"type": "json_object"},
-            "reasoning": {"effort": "none"},
-            "messages": [
-                {"role": "system", "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe."},
-                {"role": "user", "content": json.dumps({"product_title": product.get("product_title"), "bullet_points": product.get("bullet_points", []), "core_terms": product.get("core_terms", []), "task": "Double-audit every candidate using the product copy plus the local rule evidence. Relevant long-tail terms must be exact targeting. Broad is allowed only for an exact core term. Return {reviews:[{id,decision,relevance_score,confidence,reason_zh,negative_phrase_root?}]}. Scores are 0-100. Do not omit any candidate id.", "candidates": candidates}, ensure_ascii=False)},
-            ],
-            "max_completion_tokens": min(5000, 90 * len(candidates)),
-            "stream": False,
+    batch_specs = [
+        (batch_index, all_candidates[start:start + payload.batch_size])
+        for batch_index, start in enumerate(range(0, len(all_candidates), payload.batch_size))
+    ]
+    batch_results: dict[int, tuple[dict[int, dict[str, Any]], str | None]] = {}
+    worker_count = min(payload.concurrency, len(batch_specs))
+    # MiMo calls are network-bound. Run bounded batches concurrently, while
+    # keeping all SQLite writes below in deterministic batch order.
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mimo-review") as executor:
+        futures = {
+            executor.submit(_run_semantic_batch, config, product, candidates): batch_index
+            for batch_index, candidates in batch_specs
         }
-        result = _ai_json_response(config, prompt)
-        reviews = result.get("reviews") if isinstance(result, dict) else None
-        if not isinstance(reviews, list):
-            _api_error(502, "ai_review_invalid_response", "模型审核结果缺少 reviews 列表")
-        reviews_by_id: dict[int, dict[str, Any]] = {}
-        for review in reviews:
-            if not isinstance(review, dict):
-                continue
+        for future in as_completed(futures):
+            batch_index = futures[future]
             try:
-                review_id = int(review.get("id"))
-            except (TypeError, ValueError):
-                continue
-            if review_id in {item["id"] for item in candidates}:
-                reviews_by_id[review_id] = review
-        missing_ids = [item["id"] for item in candidates if item["id"] not in reviews_by_id]
-        if missing_ids:
-            _api_error(502, "ai_review_incomplete", f"模型未返回全部关键词审核结果，缺少 {len(missing_ids)} 条")
+                batch_results[batch_index] = future.result()
+            except Exception as error:  # defensive: one batch must not cancel all others
+                batch_results[batch_index] = ({}, _semantic_batch_error(error))
+
+    failed_batches: list[dict[str, Any]] = []
+    for batch_index, candidates in batch_specs:
+        reviews_by_id, batch_error = batch_results.get(batch_index, ({}, "批次没有返回结果"))
+        if batch_error:
+            failed_batches.append({"batch": batch_index + 1, "count": len(candidates), "error": batch_error})
+            continue
 
         timestamp = now_iso()
         with transaction() as connection:
@@ -605,7 +666,21 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                     connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?", (timestamp, signature, timestamp, keyword_id))
                 connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'mimo_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"]}), timestamp))
                 applied.append({"id": keyword_id, "keyword": candidate["keyword"], "decision": decision, "relevance_score": score, "reason": reason, "manual_locked": candidate["manual_locked"]})
-    return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": len(applied), "batches": (len(all_candidates) + payload.batch_size - 1) // payload.batch_size, "items": applied}
+    if failed_batches and not applied:
+        first_error = failed_batches[0]["error"]
+        _api_error(502, "ai_review_failed", f"MiMo 审核失败，{len(failed_batches)} 批均未完成：{first_error}")
+    return {
+        "product_id": product_id,
+        "provider": clean_text(config.get("provider")),
+        "model": clean_text(config.get("model")),
+        "reviewed": len(applied),
+        "batches": len(batch_specs),
+        "successful_batches": len(batch_specs) - len(failed_batches),
+        "failed_batches": failed_batches,
+        "partial": bool(failed_batches),
+        "concurrency": worker_count,
+        "items": applied,
+    }
 
 
 @app.get("/api/products")

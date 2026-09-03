@@ -103,7 +103,13 @@ export default function App() {
     try {
       const result = await api.semanticReview(selectedProduct.id)
       await loadProductData(selectedProduct)
-      setToast(result.already_reviewed ? '当前产品全部关键词已经完成 MiMo 审核，本次未重复调用。' : `MiMo 已完成全部 ${result.reviewed} 条语义审核；结果均为待人工确认草稿。`)
+      if (result.already_reviewed) {
+        setToast('当前产品全部关键词已经完成 MiMo 审核，本次未重复调用。')
+      } else if (result.partial) {
+        setToast(`MiMo 并发审核完成 ${result.reviewed} 条，仍有 ${result.failed_batches?.length || 0} 批失败；点击增量审核可只重试未完成关键词。`)
+      } else {
+        setToast(`MiMo 已并发完成全部 ${result.reviewed} 条语义审核；结果均为待人工确认草稿。`)
+      }
     } catch (error) {
       setToast(error instanceof Error ? `MiMo 审核未完成：${error.message}` : 'MiMo 审核未完成，请检查全局 AI 设置。')
     } finally {

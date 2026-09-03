@@ -82,3 +82,6 @@ class SemanticReviewRequest(BaseModel):
     # them to MiMo in bounded batches so the full product library is audited.
     limit: int = Field(default=10000, ge=1, le=10000)
     batch_size: int = Field(default=40, ge=10, le=100)
+    # Independent MiMo batches can run concurrently; the bounded default
+    # improves throughput without creating an unbounded burst of requests.
+    concurrency: int = Field(default=4, ge=1, le=8)
