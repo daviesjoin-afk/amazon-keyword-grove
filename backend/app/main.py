@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import math
 import os
 from typing import Any
@@ -18,6 +17,7 @@ from .ai_service import (
     is_short_generic_query as _is_short_generic_query,
     public_ai_config as _public_ai_config,
     require_ai_config as _ai_config_or_error,
+    run_semantic_batches as _run_semantic_batches,
     semantic_reason_is_too_broad as _semantic_reason_is_too_broad,
     semantic_review_signature as _semantic_review_signature,
     test_ai_connection as _test_ai_connection,
@@ -111,7 +111,7 @@ def test_ai_config() -> dict[str, Any]:
 
 @app.post("/api/products/{product_id}/semantic-review")
 def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
-    """Run the local-rule candidates through MiMo in batches for full review."""
+    """Run local-rule candidates through bounded concurrent semantic batches."""
 
     config = _ai_config_or_error()
     with read_connection() as connection:
@@ -140,36 +140,27 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
     actions = {"exact", "broad", "negative_exact", "negative_phrase", "observe"}
     applied: list[dict[str, Any]] = []
     core_terms = [clean_text(term).casefold() for term in product.get("core_terms", [])]
-    for batch_start in range(0, len(all_candidates), payload.batch_size):
-        candidates = all_candidates[batch_start:batch_start + payload.batch_size]
-        prompt = {
-            "model": clean_text(config.get("model")),
-            "response_format": {"type": "json_object"},
-            "reasoning": {"effort": "none"},
-            "messages": [
-                {"role": "system", "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe."},
-                {"role": "user", "content": json.dumps({"product_title": product.get("product_title"), "bullet_points": product.get("bullet_points", []), "core_terms": product.get("core_terms", []), "task": "Double-audit every candidate using the product copy plus the local rule evidence. Relevant long-tail terms must be exact targeting. Broad is allowed only for an exact core term. Return {reviews:[{id,decision,relevance_score,confidence,reason_zh,negative_phrase_root?}]}. Scores are 0-100. Do not omit any candidate id.", "candidates": candidates}, ensure_ascii=False)},
-            ],
-            "max_completion_tokens": min(5000, 90 * len(candidates)),
-            "stream": False,
-        }
-        result = _ai_json_response(config, prompt)
-        reviews = result.get("reviews") if isinstance(result, dict) else None
-        if not isinstance(reviews, list):
-            _api_error(502, "ai_review_invalid_response", "模型审核结果缺少 reviews 列表")
-        reviews_by_id: dict[int, dict[str, Any]] = {}
-        for review in reviews:
-            if not isinstance(review, dict):
-                continue
-            try:
-                review_id = int(review.get("id"))
-            except (TypeError, ValueError):
-                continue
-            if review_id in {item["id"] for item in candidates}:
-                reviews_by_id[review_id] = review
-        missing_ids = [item["id"] for item in candidates if item["id"] not in reviews_by_id]
-        if missing_ids:
-            _api_error(502, "ai_review_incomplete", f"模型未返回全部关键词审核结果，缺少 {len(missing_ids)} 条")
+    batch_specs = [
+        (batch_index, all_candidates[start:start + payload.batch_size])
+        for batch_index, start in enumerate(range(0, len(all_candidates), payload.batch_size))
+    ]
+    batch_results, worker_count = _run_semantic_batches(
+        config,
+        product,
+        batch_specs,
+        payload.concurrency,
+        _ai_json_response,
+    )
+    failed_batches: list[dict[str, Any]] = []
+
+    # Network-bound model calls run concurrently above. SQLite writes remain
+    # deterministic here, in original batch order, so partial failures never
+    # create concurrent database transactions or reorder audit history.
+    for batch_index, candidates in batch_specs:
+        reviews_by_id, batch_error = batch_results.get(batch_index, ({}, "批次没有返回结果"))
+        if batch_error:
+            failed_batches.append({"batch": batch_index + 1, "count": len(candidates), "error": batch_error})
+            continue
 
         timestamp = now_iso()
         with transaction() as connection:
@@ -202,25 +193,15 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                     decision = "observe"
                     reason += "；装饰类意图过宽且缺少花环/产品类型锚点，降为观察/暂不投放"
                 # MiMo can describe a query as too broad while accidentally
-                # returning `exact`.  For a non-core short generic query,
+                # returning `exact`. For a non-core short generic query,
                 # honour that semantic warning and keep the term out of the
-                # exact budget.  This prevents `home decor`-style terms from
-                # being shown as precise targeting solely because they share a
-                # generic word with the product copy.
+                # exact budget.
                 if decision in {"exact", "broad"} and keyword_text not in core_terms:
-                    # A broadness warning only downgrades short generic
-                    # queries without a product anchor.  Core-anchor terms
-                    # such as `wreath` remain eligible for exact targeting
-                    # even when MiMo notes that the single word is broad in
-                    # isolation.
-                    if decision in {"exact", "broad"} and _is_short_generic_query(keyword_text, product) and (_semantic_reason_is_too_broad(reason) or score < 80):
+                    if _is_short_generic_query(keyword_text, product) and (_semantic_reason_is_too_broad(reason) or score < 80):
                         decision = "observe"
                         reason += "；语义审核提示词义过宽或具体度不足，降为观察/暂不投放"
                 # A complete, sufficiently searched product root is the one
-                # intentional broad seed.  MiMo often answers "exact" for a
-                # root because it is highly relevant; preserve the local
-                # broad-root decision when semantic relevance also clears the
-                # normal targeting floor.  Long-tail terms are never promoted
+                # intentional broad seed. Long-tail terms are never promoted
                 # by this guard.
                 if candidate["rule_action"] == "broad" and decision == "exact" and score >= 60:
                     decision = "broad"
@@ -232,7 +213,7 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                     root = clean_text(review.get("negative_phrase_root") or keyword_text).casefold()
                     related = connection.execute("SELECT relevance_score FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND keyword_normalized LIKE ?", (product_id, f"%{root}%")).fetchall()
                     # Keep the complete generic-decor example at negative
-                    # exact.  `room decor` itself can be excluded, but a
+                    # exact. `room decor` itself can be excluded, but a
                     # phrase-level action would be too aggressive because
                     # valid combinations such as `room ... wreath` may still
                     # exist in the same corpus.
@@ -240,9 +221,8 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                         decision = "negative_exact"
                         reason += "；泛房间装饰只否定完整搜索词，避免把 room 相关有效组合一并拦截"
                     # A one-word root such as `room` is too broad to negate as
-                    # a phrase: it could catch a valid `room ... wreath`
-                    # query. Require a multi-word root plus the existing
-                    # repeated-root / relevance conflict checks.
+                    # a phrase. Require a multi-word root plus repeated-root /
+                    # relevance conflict checks.
                     if decision == "negative_phrase" and (len(tokens(root)) < 2 or len(related) < 2 or any(int(item["relevance_score"] or 0) >= 50 for item in related)):
                         decision = "negative_exact"
                         reason += "；否定词组可能误伤相关词或词根过短，已降为否定精准草稿"
@@ -257,7 +237,23 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                     connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?", (timestamp, signature, timestamp, keyword_id))
                 connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'mimo_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"]}), timestamp))
                 applied.append({"id": keyword_id, "keyword": candidate["keyword"], "decision": decision, "relevance_score": score, "reason": reason, "manual_locked": candidate["manual_locked"]})
-    return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": len(applied), "batches": (len(all_candidates) + payload.batch_size - 1) // payload.batch_size, "items": applied}
+
+    if failed_batches and not applied:
+        first_error = failed_batches[0]["error"]
+        _api_error(502, "ai_review_failed", f"MiMo 审核失败，{len(failed_batches)} 批均未完成：{first_error}")
+
+    return {
+        "product_id": product_id,
+        "provider": clean_text(config.get("provider")),
+        "model": clean_text(config.get("model")),
+        "reviewed": len(applied),
+        "batches": len(batch_specs),
+        "successful_batches": len(batch_specs) - len(failed_batches),
+        "failed_batches": failed_batches,
+        "partial": bool(failed_batches),
+        "concurrency": worker_count,
+        "items": applied,
+    }
 
 
 @app.get("/api/products")

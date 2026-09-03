@@ -1,6 +1,10 @@
+import threading
+import time
+
 from backend.app.ai_service import (
     is_short_generic_query,
     public_ai_config,
+    run_semantic_batches,
     semantic_reason_is_too_broad,
     semantic_review_signature,
 )
@@ -62,3 +66,90 @@ def test_short_generic_query_requires_missing_product_anchor():
     assert is_short_generic_query("gift", product) is True
     assert is_short_generic_query("wreath decor", product) is False
     assert is_short_generic_query("boxwood wreath for front door", product) is False
+
+
+def test_semantic_batches_overlap_network_calls_but_return_results_by_batch_index():
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_request(_config, payload):
+        nonlocal active, max_active
+        candidates = __import__("json").loads(payload["messages"][1]["content"])["candidates"]
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.04)
+        with lock:
+            active -= 1
+        return {
+            "reviews": [
+                {
+                    "id": item["id"],
+                    "decision": "exact",
+                    "relevance_score": 90,
+                    "confidence": 0.9,
+                    "reason_zh": "并发测试",
+                }
+                for item in candidates
+            ]
+        }
+
+    batch_specs = [
+        (0, [{"id": 1, "keyword": "one"}]),
+        (1, [{"id": 2, "keyword": "two"}]),
+        (2, [{"id": 3, "keyword": "three"}]),
+    ]
+    results, worker_count = run_semantic_batches(
+        {"model": "mimo-v2.5"},
+        {"product_title": "Test", "bullet_points": [], "core_terms": []},
+        batch_specs,
+        3,
+        fake_request,
+        retries=1,
+    )
+
+    assert worker_count == 3
+    assert max_active >= 2
+    assert sorted(results) == [0, 1, 2]
+    assert results[0][1] is None
+    assert results[0][0][1]["decision"] == "exact"
+    assert results[2][0][3]["reason_zh"] == "并发测试"
+
+
+def test_semantic_batches_keep_success_when_one_batch_fails():
+    def fake_request(_config, payload):
+        candidates = __import__("json").loads(payload["messages"][1]["content"])["candidates"]
+        if candidates[0]["id"] == 2:
+            raise RuntimeError("simulated batch failure")
+        return {
+            "reviews": [
+                {
+                    "id": item["id"],
+                    "decision": "observe",
+                    "relevance_score": 70,
+                    "confidence": 0.7,
+                    "reason_zh": "成功批次",
+                }
+                for item in candidates
+            ]
+        }
+
+    batch_specs = [
+        (0, [{"id": 1, "keyword": "one"}]),
+        (1, [{"id": 2, "keyword": "two"}]),
+    ]
+    results, worker_count = run_semantic_batches(
+        {"model": "mimo-v2.5"},
+        {"product_title": "Test", "bullet_points": [], "core_terms": []},
+        batch_specs,
+        2,
+        fake_request,
+        retries=1,
+    )
+
+    assert worker_count == 2
+    assert results[0][1] is None
+    assert results[0][0][1]["decision"] == "observe"
+    assert results[1][0] == {}
+    assert "simulated batch failure" in (results[1][1] or "")
