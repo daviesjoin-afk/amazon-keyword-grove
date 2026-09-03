@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Maintenance
+
+- Repository hygiene baseline: fixed the clone URL, hardened CI permissions and timeouts, added dependency checks, and enabled weekly Dependabot updates.
+
 ## [0.2.1] - 2026-09-03
 
 ### Fixed
