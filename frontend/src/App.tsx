@@ -167,7 +167,7 @@ export default function App() {
   async function runSemanticReview() {
     if (!selectedProduct || semanticReviewing) return
     if (!keywords.length) {
-      setToast('当前产品还没有关键词，请先导入关键词表后再进行 MiMo 审核。')
+      setToast('当前产品还没有关键词，请先导入关键词表后再进行 AI 语义审核。')
       return
     }
     const reviewProduct = selectedProduct
@@ -178,11 +178,11 @@ export default function App() {
         setReviewProgress(status)
         setReviewPollNonce((current) => current + 1)
       }
-      if (status.status === 'completed' && status.pending === 0) setToast('当前产品全部关键词已经完成 MiMo 审核。')
-      else if (status.status === 'running') setToast(`已开始 MiMo 增量审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
-      else setToast('MiMo 审核状态已更新，请查看广告建议页的进度。')
+      if (status.status === 'completed' && status.pending === 0) setToast('当前产品全部关键词已经完成 AI 语义审核。')
+      else if (status.status === 'running') setToast(`已开始 AI 增量审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
+      else setToast('AI 语义审核状态已更新，请查看广告建议页的进度。')
     } catch (error) {
-      setToast(error instanceof Error ? `MiMo 审核未完成：${error.message}` : 'MiMo 审核未完成，请检查全局 AI 设置。')
+      setToast(error instanceof Error ? `AI 语义审核未完成：${error.message}` : 'AI 语义审核未完成，请检查全局 AI 设置。')
     }
   }
 

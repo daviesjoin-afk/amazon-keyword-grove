@@ -410,7 +410,7 @@ def recommendation_for(
         reason = "关键词过于宽泛且未包含明确产品锚点；先观察，不直接占用精准投放预算"
     elif _is_exact_core_term(keyword, product) and row.get("monthly_search_volume") is not None and int(row["monthly_search_volume"]) >= MIN_TARGETING_SEARCH_VOLUME:
         # Product-level roots are the only safe broad seeds.  They are still
-        # sent through MiMo; this deterministic candidate makes the intended
+        # sent through semantic review; this deterministic candidate makes the intended
         # broad-root pool visible even when the model conservatively answers
         # exact for the same phrase.
         action = "broad"

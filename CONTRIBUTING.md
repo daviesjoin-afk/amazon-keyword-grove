@@ -44,7 +44,7 @@ GitHub Actions 会重复执行这些关键检查。不要通过跳过测试、�
 
 - SellerSprite 或其他来源的真实业务导出文件
 - SQLite 数据库、日志、临时分析文件
-- MiMo / OpenAI-compatible API Key
+- AI / OpenAI-compatible API Key
 - 客户或竞品相关的非公开业务数据
 
 需要演示时，请使用合成数据或仓库内的 mock 数据。发现疑似密钥泄漏时，请按照 [SECURITY.md](./SECURITY.md) 处理，不要在公开 Issue 中粘贴密钥。

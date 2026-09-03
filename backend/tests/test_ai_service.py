@@ -13,7 +13,7 @@ from backend.app.ai_service import (
 def test_public_ai_config_masks_secret_and_never_returns_plaintext_key():
     public = public_ai_config(
         {
-            "provider": "mimo",
+            "provider": "openrouter",
             "base_url": "https://api.example.com/v1",
             "model": "semantic-model",
             "api_key": "local-secret-1234",
@@ -101,7 +101,7 @@ def test_semantic_batches_overlap_network_calls_but_return_results_by_batch_inde
         (2, [{"id": 3, "keyword": "three"}]),
     ]
     results, worker_count = run_semantic_batches(
-        {"model": "mimo-v2.5"},
+        {"model": "minimax/minimax-m3:free"},
         {"product_title": "Test", "bullet_points": [], "core_terms": []},
         batch_specs,
         3,
@@ -140,7 +140,7 @@ def test_semantic_batches_keep_success_when_one_batch_fails():
         (1, [{"id": 2, "keyword": "two"}]),
     ]
     results, worker_count = run_semantic_batches(
-        {"model": "mimo-v2.5"},
+        {"model": "minimax/minimax-m3:free"},
         {"product_title": "Test", "bullet_points": [], "core_terms": []},
         batch_specs,
         2,

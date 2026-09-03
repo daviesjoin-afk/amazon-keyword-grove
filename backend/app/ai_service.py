@@ -23,7 +23,7 @@ from .db import read_connection
 from .utils import clean_text, loads, tokens
 
 
-SEMANTIC_REVIEW_VERSION = "mimo-double-audit-v2"
+SEMANTIC_REVIEW_VERSION = "ai-double-audit-v3"
 SEMANTIC_REVIEW_RETRIES = 3
 SemanticRequester = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -210,7 +210,7 @@ def run_semantic_batch(
             last_error = semantic_batch_error(error)
             if attempt + 1 < attempts:
                 time.sleep(0.35 * (2 ** attempt))
-    return {}, last_error or "MiMo 批次审核失败"
+    return {}, last_error or "AI 语义审核批次失败"
 
 
 def run_semantic_batches(
@@ -228,7 +228,7 @@ def run_semantic_batches(
         return {}, 0
     worker_count = min(max(1, concurrency), len(batch_specs))
     batch_results: dict[int, tuple[dict[int, dict[str, Any]], str | None]] = {}
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mimo-review") as executor:
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ai-review") as executor:
         remaining_batches = iter(batch_specs)
         futures: dict[Any, int] = {}
 

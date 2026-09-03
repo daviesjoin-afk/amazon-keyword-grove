@@ -23,32 +23,32 @@
 - UI-level AI settings safety tests covering masked-key display, blank-key preservation, plaintext clearing after save, and required-field validation.
 - Architecture/trust-boundary documentation, contribution guidance and a pull-request quality checklist.
 - Bounded concurrent semantic-review network batches with retries and explicit partial-failure reporting; successful batches are retained while failed batches remain pending.
-- Refresh-safe MiMo background review endpoint (`POST /semantic-review` with `background=true`) and a status endpoint that reports reviewed/total, pending keywords and completed/failed batches.
+- Refresh-safe AI background review endpoint (`POST /semantic-review` with `background=true`) and a status endpoint that reports reviewed/total, pending keywords and completed/failed batches.
 - A synchronized release-version contract test covering `VERSION`, FastAPI, frontend package metadata and the README.
 
 ### Changed
 
 - 将相关性展示统一为竞品 ASIN 占比（如 `5/20`），保留独立的 0–100 语义评分，并让接口按产品实际竞品数动态计算分母。
-- 增量 MiMo 审核改为可查询的后台分批任务，广告建议页显示已审核数、总数和批次进度，刷新页面后自动恢复状态。
-- MiMo 审核采用受控并发的后台分批处理机制；决策写入保持顺序一致，失败批次保留待审核并支持增量重试。
+- 增量 AI 审核改为可查询的后台分批任务，广告建议页显示已审核数、总数和批次进度，刷新页面后自动恢复状态。
+- AI 审核采用受控并发的后台分批处理机制；决策写入保持顺序一致，失败批次保留待审核并支持增量重试。
 - 关键词、词根、广告建议和导出页统一以月搜索量降序为默认排序；广泛投放只保留产品级核心词根，投放建议不产生词组匹配。
 - 持续集成与仓库治理改进已纳入本版本：最小 CI 权限、重复任务取消、超时、依赖完整性与编译门禁、前端测试、分组 Dependabot，以及 API 支持层和 AI 传输职责拆分。
 
 ### Fixed
 
-- 新建产品在未导入关键词表时不再虚构 20 个竞品 ASIN 或显示 MiMo 审核中；导入有效关键词后自动从“准备中”转为可用状态。
+- 新建产品在未导入关键词表时不再虚构 20 个竞品 ASIN 或显示 AI 审核中；导入有效关键词后自动从“准备中”转为可用状态。
 - 持久化当前选中产品并防止切换产品时旧的异步关键词请求覆盖新页面，刷新后仍停留在用户选中的产品。
-- 空词库概览不再显示 `NaN%`，MiMo 全量审核按钮会明确提示先导入关键词。
+- 空词库概览不再显示 `NaN%`，AI 全量审核按钮会明确提示先导入关键词。
 - 竞品相关性改为产品级 ASIN 覆盖率（例如 `5/20`），不再把固定 20 或独立语义分数当成相关性；低于 30% 的建议自动降为观察。
 - `room decor` 等泛装饰完整搜索词只建议否定精准，不会把 `room` 词根升级为否定词组；低相关、低覆盖和低搜索量词不会被误投精准。
-- 真实 SellerSprite 多行更新会合并关键词来源 ASIN，保留异常原始指标；人工锁定字段不会被重新导入或 MiMo 覆盖。
+- 真实 SellerSprite 多行更新会合并关键词来源 ASIN，保留异常原始指标；人工锁定字段不会被重新导入或 AI 覆盖。
 - 重复点击后台审核不会创建第二个任务；新产品/空词库不会显示虚假的审核进度或竞品关系。
 
 ### Verification
 
 - Backend: `17 passed, 1 skipped`，包含 API、导入、规则、并发语义审核和刷新安全进度测试。
 - Frontend: `8 passed`，并通过 TypeScript/Vite production build。
-- `git diff --check` clean；公开仓库不包含真实 SellerSprite 文件、数据库或 MiMo API Key。
+- `git diff --check` clean；公开仓库不包含真实 SellerSprite 文件、数据库或 AI API Key。
 
 ### Maintenance
 
@@ -70,7 +70,7 @@
 ### Added
 
 - Multi-product SellerSprite keyword-library workflow with product copy, competitor ASINs and incremental imports.
-- MiMo v2.5 settings, persisted full/incremental semantic review, and review evidence.
+- OpenRouter settings, persisted full/incremental semantic review, and review evidence.
 - Advertising Suggestions page with exact, broad, negative exact, negative phrase and observe exports.
 - Monthly-search-volume-first sorting and stricter low-relevance/low-coverage safeguards.
 - Standalone project metadata, MIT license and CI-ready verification commands.

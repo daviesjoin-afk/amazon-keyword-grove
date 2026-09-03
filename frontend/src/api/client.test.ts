@@ -139,9 +139,9 @@ describe('API client', () => {
   it('does not expose the saved AI key when normalizing configuration', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       jsonResponse({
-        provider: 'mimo',
+        provider: 'openrouter',
         base_url: 'https://api.example.com/v1',
-        model: 'mimo-v2.5',
+        model: 'minimax/minimax-m3:free',
         enabled: true,
         timeout_seconds: 45,
         api_key_set: true,

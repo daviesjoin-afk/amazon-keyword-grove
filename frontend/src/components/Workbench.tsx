@@ -29,11 +29,11 @@ export function Workbench({ product, keywords, batches, onOpenImport, onSelectKe
   const [tab, setTab] = useState<WorkbenchTab>('overview')
   const hasKeywords = product.keywordTotal > 0 || keywords.length > 0
   const reviewButtonLabel = semanticReviewing && reviewProgress
-    ? `MiMo 审核中 ${reviewProgress.reviewed.toLocaleString('en-US')} / ${reviewProgress.total.toLocaleString('en-US')}`
-    : hasKeywords ? 'MiMo 全量审核' : '暂无关键词'
+    ? `AI 审核中 ${reviewProgress.reviewed.toLocaleString('en-US')} / ${reviewProgress.total.toLocaleString('en-US')}`
+    : hasKeywords ? 'AI 全量审核' : '暂无关键词'
   const reviewButtonTitle = hasKeywords
-    ? '发送当前产品资料与全部关键词到 MiMo，分批生成投放和否词草稿；人工锁定结果只记录审核不覆盖'
-    : '请先导入关键词表，再进行 MiMo 语义审核'
+    ? '发送当前产品资料与全部关键词到 AI 模型，分批生成投放和否词草稿；人工锁定结果只记录审核不覆盖'
+    : '请先导入关键词表，再进行 AI 语义审核'
   return <div className="workbench-page">
     <div className="workbench-head"><div className="workbench-product"><div className="product-symbol"><TreePine size={21} /></div><div><div className="workbench-kicker"><span className="status-dot status-dot-live" />产品工作台 <span className="slash">/</span> {product.site}</div><h1>{product.name}</h1><div className="workbench-submeta"><span>竞品参考 <code>{product.referenceAsin}</code></span><span>·</span><span>{product.category}</span><span className="reference-badge">竞品样本</span></div></div></div><div className="workbench-actions"><button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={reviewButtonTitle} onClick={() => void onSemanticReview()}><BrainCircuit size={15} />{reviewButtonLabel}</button><button className="button button-secondary compact-button" type="button" onClick={onExport}><Download size={15} />导出</button><button className="button button-primary compact-button" type="button" onClick={onOpenImport}><Upload size={15} />导入新批次</button></div></div>
     <nav className="workbench-tabs" aria-label="产品工作台分页">

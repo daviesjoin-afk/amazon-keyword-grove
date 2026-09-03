@@ -188,7 +188,7 @@ def _semantic_review_sync(
                 keyword_text = clean_text(candidate["keyword"]).casefold()
                 score = max(0, min(100, int(review.get("relevance_score", candidate["rule_score"]) or 0)))
                 confidence = max(0.0, min(1.0, float(review.get("confidence", 0.5) or 0.5)))
-                reason = clean_text(review.get("reason_zh"))[:600] or "MiMo 语义审核未给出详细理由"
+                reason = clean_text(review.get("reason_zh"))[:600] or "AI 语义审核未给出详细理由"
                 if decision in {"exact", "broad"} and candidate["monthly_search_volume"] is not None and int(candidate["monthly_search_volume"]) < MIN_TARGETING_SEARCH_VOLUME:
                     decision = "observe"
                     reason += f"；月搜索量仅 {int(candidate['monthly_search_volume'])}，低于 {MIN_TARGETING_SEARCH_VOLUME} 投放门槛，降为观察"
@@ -204,11 +204,11 @@ def _semantic_review_sync(
                 if candidate["rule_action"] == "negative_exact" and decision in {"observe", "exact", "broad"} and score < 50:
                     if _clear_generic_decor_mismatch(keyword_text, analyze_keyword(keyword_text, product), product):
                         decision = "negative_exact"
-                        reason += "；内置规则与 MiMo 均判定为泛房间装饰查询，保留否定精准"
+                        reason += "；内置规则与 AI 均判定为泛房间装饰查询，保留否定精准"
                 if decision in {"exact", "broad"} and keyword_text not in core_terms and _is_generic_decor_without_anchor(keyword_text, product):
                     decision = "observe"
                     reason += "；装饰类意图过宽且缺少花环/产品类型锚点，降为观察/暂不投放"
-                # MiMo can describe a query as too broad while accidentally
+                # The semantic model can describe a query as too broad while accidentally
                 # returning `exact`. For a non-core short generic query,
                 # honour that semantic warning and keep the term out of the
                 # exact budget.
@@ -247,18 +247,18 @@ def _semantic_review_sync(
                 if not candidate["manual_locked"]:
                     connection.execute("""UPDATE keywords SET relevance_score = ?, match_strength_auto = ?, suggested_action_auto = ?, suggested_match_type = ?,
                         advice_reason = ?, advice_confidence = ?, advice_risk_level = ?, semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?""",
-                        (score, strength, decision, decision, "MiMo 语义审核：" + reason, confidence, "high" if decision == "negative_phrase" else "medium" if decision in {"broad", "negative_exact", "observe"} else "low", timestamp, signature, timestamp, keyword_id),
+                        (score, strength, decision, decision, "AI 语义审核：" + reason, confidence, "high" if decision == "negative_phrase" else "medium" if decision in {"broad", "negative_exact", "observe"} else "low", timestamp, signature, timestamp, keyword_id),
                     )
                 else:
                     connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?", (timestamp, signature, timestamp, keyword_id))
-                connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'mimo_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"]}), timestamp))
+                connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'ai_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"]}), timestamp))
                 applied.append({"id": keyword_id, "keyword": candidate["keyword"], "decision": decision, "relevance_score": score, "reason": reason, "manual_locked": candidate["manual_locked"]})
         if progress_callback:
             progress_callback(batch_index + 1, len(candidates), True, None)
 
     if failed_batches and not applied:
         first_error = failed_batches[0]["error"]
-        _api_error(502, "ai_review_failed", f"MiMo 审核失败，{len(failed_batches)} 批均未完成：{first_error}")
+        _api_error(502, "ai_review_failed", f"AI 语义审核失败，{len(failed_batches)} 批均未完成：{first_error}")
 
     return {
         "product_id": product_id,
@@ -390,7 +390,7 @@ def _start_background_semantic_review(product_id: int, payload: SemanticReviewRe
             }
     if already_running:
         return _semantic_review_status_snapshot(product_id)
-    thread = threading.Thread(target=_run_background_semantic_review, args=(product_id, payload), name=f"mimo-review-{product_id}", daemon=True)
+    thread = threading.Thread(target=_run_background_semantic_review, args=(product_id, payload), name=f"ai-review-{product_id}", daemon=True)
     thread.start()
     return _semantic_review_status_snapshot(product_id)
 

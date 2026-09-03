@@ -228,7 +228,7 @@ def test_product_copy_and_ai_config_are_editable_without_exposing_key(client):
 def test_semantic_review_audits_every_keyword_in_batches(client, monkeypatch):
     configured = client.put(
         "/api/ai-config",
-        json={"provider": "mimo", "base_url": "https://api.example.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-5678", "enabled": True},
+        json={"provider": "openrouter", "base_url": "https://api.example.com/v1", "model": "minimax/minimax-m3:free", "api_key": "local-test-key-5678", "enabled": True},
     )
     assert configured.status_code == 200
     created = client.post("/api/products", json={"name": "Batch review product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
@@ -270,7 +270,7 @@ def test_semantic_review_audits_every_keyword_in_batches(client, monkeypatch):
 def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monkeypatch):
     configured = client.put(
         "/api/ai-config",
-        json={"provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-9012", "enabled": True},
+        json={"provider": "openrouter", "base_url": "https://api.example.com/v1", "model": "minimax/minimax-m3:free", "api_key": "local-test-key-9012", "enabled": True},
     )
     assert configured.status_code == 200
     created = client.post("/api/products", json={"name": "Broad warning product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
@@ -292,7 +292,7 @@ def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monke
 def test_background_semantic_review_reports_refresh_safe_progress(client, monkeypatch):
     configured = client.put(
         "/api/ai-config",
-        json={"provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-progress", "enabled": True},
+        json={"provider": "openrouter", "base_url": "https://api.example.com/v1", "model": "minimax/minimax-m3:free", "api_key": "local-test-key-progress", "enabled": True},
     )
     assert configured.status_code == 200
     created = client.post("/api/products", json={"name": "Progress review product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})

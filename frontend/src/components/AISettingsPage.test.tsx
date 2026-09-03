@@ -9,9 +9,9 @@ import type { AIConfig } from '../types'
 import { AISettingsPage } from './AISettingsPage'
 
 const savedConfig: AIConfig = {
-  provider: 'mimo',
-  baseUrl: 'https://api.xiaomimimo.com/v1',
-  model: 'mimo-v2.5',
+  provider: 'openrouter',
+  baseUrl: 'https://openrouter.ai/api/v1',
+  model: 'minimax/minimax-m3:free',
   enabled: true,
   timeoutSeconds: 60,
   apiKeySet: true,
@@ -93,9 +93,9 @@ describe('AISettingsPage safety contracts', () => {
 
     expect(saveSpy).toHaveBeenCalledTimes(1)
     expect(saveSpy).toHaveBeenCalledWith({
-      provider: 'mimo',
-      baseUrl: 'https://api.xiaomimimo.com/v1',
-      model: 'mimo-v2.5',
+      provider: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'minimax/minimax-m3:free',
       apiKey: undefined,
       enabled: true,
       timeoutSeconds: 60,

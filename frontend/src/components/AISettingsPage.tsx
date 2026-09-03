@@ -4,7 +4,6 @@ import { api } from '../api/client'
 import type { AIConfig, AIConfigPayload } from '../types'
 
 const openRouterPreset = { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'minimax/minimax-m3:free' }
-const mimoPreset = { provider: 'mimo', baseUrl: 'https://api.xiaomimimo.com/v1', model: 'mimo-v2.5' }
 const openRouterFreeModels = [
   { value: 'minimax/minimax-m3:free', label: 'MiniMax M3（免费）' },
   { value: 'minimax/minimax-m2.7:free', label: 'MiniMax M2.7（免费）' },
@@ -43,7 +42,7 @@ export function AISettingsPage() {
   }
 
   function selectProvider(provider: string) {
-    const preset = provider === 'openrouter' ? openRouterPreset : provider === 'mimo' ? mimoPreset : null
+    const preset = provider === 'openrouter' ? openRouterPreset : null
     setAI((current) => preset ? { ...current, ...preset } : { ...current, provider })
   }
 
@@ -52,7 +51,7 @@ export function AISettingsPage() {
     <section className="settings-card ai-settings-card">
       <div className="settings-card-head"><div className="settings-card-icon ai-icon"><Bot size={20} /></div><div><h2>AI 语义模型接口</h2><p>默认预设为 OpenRouter 的 MiniMax M3 免费模型；用于语义分类增强，不会自动执行广告或否定操作。</p></div><label className="settings-switch"><input type="checkbox" checked={ai.enabled} onChange={(event) => setAI((current) => ({ ...current, enabled: event.target.checked }))} /><span />启用配置</label></div>
       {loading ? <div className="settings-loading">正在读取本地配置…</div> : <div className="ai-form-grid">
-        <label className="settings-field"><span>接口类型</span><select value={ai.provider} onChange={(event) => selectProvider(event.target.value)}><option value="openrouter">OpenRouter（MiniMax 免费模型）</option><option value="mimo">小米 MiMo</option><option value="openai_compatible">OpenAI 兼容接口</option><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="custom">自定义</option></select></label>
+        <label className="settings-field"><span>接口类型</span><select value={ai.provider} onChange={(event) => selectProvider(event.target.value)}><option value="openrouter">OpenRouter（MiniMax 免费模型）</option><option value="openai_compatible">OpenAI 兼容接口</option><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="custom">自定义</option></select></label>
         <label className="settings-field"><span>模型预设</span><select aria-label="模型预设" value={openRouterFreeModels.some((item) => item.value === ai.model) ? ai.model : 'custom'} onChange={(event) => { if (event.target.value !== 'custom') setAI((current) => ({ ...current, model: event.target.value })) }}><option value={openRouterFreeModels[0].value}>{openRouterFreeModels[0].label}</option><option value={openRouterFreeModels[1].value}>{openRouterFreeModels[1].label}</option><option value="custom">自定义输入</option></select></label>
         <label className="settings-field full-settings-field"><span>模型标识 <em>*</em></span><input value={ai.model} onChange={(event) => setAI((current) => ({ ...current, model: event.target.value }))} placeholder="例如 minimax/minimax-m3:free" /><small>可直接修改或粘贴任意 OpenRouter 模型标识。</small></label>
         <label className="settings-field full-settings-field"><span>API Base URL <em>*</em></span><input value={ai.baseUrl} onChange={(event) => setAI((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://openrouter.ai/api/v1" /></label>

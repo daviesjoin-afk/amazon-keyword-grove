@@ -80,7 +80,7 @@ class AIConfigUpdate(BaseModel):
 class SemanticReviewRequest(BaseModel):
     keyword_ids: list[int] = Field(default_factory=list)
     # `limit` is the total number of keywords to review. The endpoint sends
-    # them to MiMo in bounded batches so the full product library is audited.
+    # them to the configured AI provider in bounded batches so the full product library is audited.
     limit: int = Field(default=10000, ge=1, le=10000)
     # Keep an individual model response small enough to complete reliably.
     # Concurrency still allows multiple batches to run at the same time.

@@ -245,7 +245,7 @@ def init_db() -> None:
         # Preserve audits created before the explicit status columns existed.
         # The reason prefix was the previous durable marker and is safe to
         # backfill once during migration.
-        connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = COALESCE(semantic_reviewed_at, updated_at) WHERE semantic_reviewed = 0 AND advice_reason LIKE 'MiMo 语义审核：%'")
+        connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = COALESCE(semantic_reviewed_at, updated_at) WHERE semantic_reviewed = 0 AND advice_reason LIKE '%语义审核：%'")
         # Product workspaces created before import-status persistence could
         # remain in ``preparing`` forever even though they already contain a
         # keyword library.  Resolve only those legacy rows; empty new products

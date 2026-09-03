@@ -120,7 +120,7 @@ function normalizeKeyword(item: BackendKeyword, rootCandidates: string[], produc
     suggestedAction: action, suggestionReason: String(item.advice_reason || '数据不足，等待人工复核'), confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
     approvalStatus: item.manual_locked ? '已接受' : '待审批', notes: item.notes ? String(item.notes) : undefined, sourceAsins: asins,
     ppcBid: item.ppc_bid == null ? null : Number(item.ppc_bid), titleDensity: item.title_density == null ? null : Number(item.title_density), demandSupplyRatio: item.demand_supply_ratio == null ? null : Number(item.demand_supply_ratio),
-    isLocked: Boolean(item.manual_locked), semanticReviewed: Boolean(item.semantic_reviewed) || String(item.advice_reason || '').startsWith('MiMo 语义审核：'), lastUpdated: String(item.updated_at || ''),
+    isLocked: Boolean(item.manual_locked), semanticReviewed: Boolean(item.semantic_reviewed) || String(item.advice_reason || '').includes('语义审核：'), lastUpdated: String(item.updated_at || ''),
   }
 }
 
