@@ -27,7 +27,7 @@ flowchart LR
 
 - `main.py`：FastAPI 应用创建、公开路由和产品/关键词工作流编排；
 - `api_support.py`：API 响应整形、查询过滤、Pydantic 兼容和人工编辑校验；
-- `ai_service.py`：AI 配置读取/脱敏、OpenAI-compatible 请求、连接测试与语义审核辅助判断；
+- `ai_service.py`：AI 配置读取/脱敏、OpenAI-compatible 请求、连接测试、语义审核批次并发与辅助判断；
 - `importer.py`：SellerSprite 工作簿/CSV 表头识别、字段清洗、增量导入；
 - `analyzer.py`：关键词相关度、核心词根与广告建议规则；
 - `db.py`：SQLite 初始化、连接和持久化辅助；
@@ -35,6 +35,8 @@ flowchart LR
 - `utils.py`：数值、货币、百分比与关键词标准化。
 
 `main.py` 保留路由编排和事务边界，但不再直接承担 AI HTTP transport、secret-safe 配置读取或通用响应/过滤工具。这个拆分让后续继续迁移到 router/service 结构时可以逐步进行，而无需一次性改变公开 API。
+
+语义审核把 **网络并发** 和 **本地持久化** 明确分开：独立模型批次可以使用有上限的线程池并发请求，并对单批失败做有限重试；所有 SQLite 更新仍由路由层按原始批次顺序、单线程事务写入。成功批次可以持久化，失败批次保持待审核并在响应中显式报告，不会因为一个远端请求失败就回滚或重跑已经成功的批次。
 
 后端把数据库视为本地业务状态的唯一持久化来源。测试使用独立临时数据库，避免污染真实数据。
 
@@ -63,7 +65,7 @@ flowchart LR
 
 ### AI provider
 
-AI API Key 只存储在本地数据库，读取配置时只返回 `api_key_set` 与尾号提示。`ai_service.py` 统一负责模型请求与脱敏配置边界；语义审核是辅助判断，不能绕过规则安全边界和人工审批。
+AI API Key 只存储在本地数据库，读取配置时只返回 `api_key_set` 与尾号提示。`ai_service.py` 统一负责模型请求与脱敏配置边界；语义审核是辅助判断，不能绕过规则安全边界和人工审批。并发只作用于独立的远端模型调用，且并发度有硬上限；错误摘要不得包含完整 API Key。
 
 ### Imported files
 
@@ -91,7 +93,8 @@ CI 分为两条独立链路：
 - 安装依赖；
 - `pip check`；
 - `compileall`；
-- pytest API / 导入 / 推荐规则回归测试。
+- pytest API / 导入 / 推荐规则回归测试；
+- AI service 测试验证 Key 脱敏、审核 fingerprint、并发重叠和部分失败隔离。
 
 **Frontend**
 - frozen lockfile 安装；
@@ -102,7 +105,7 @@ CI 分为两条独立链路：
 
 为保持演进透明，当前已知技术债包括：
 
-- `backend/app/main.py` 已抽离通用 API helper 和 AI transport，但语义审核与 CRUD 路由仍较长；下一步适合按 `products` / `keywords` / `semantic_review` 分 router/service；
+- `backend/app/main.py` 已抽离通用 API helper 和 AI transport，但语义审核的决策应用与 CRUD 路由仍较长；下一步适合按 `products` / `keywords` / `semantic_review` 分 router/service；
 - 前端大组件和单一 CSS 文件体积较大，适合按领域继续拆分；
 - 现阶段测试重点覆盖高风险业务规则和 API 数据边界，UI 交互测试仍可扩展；
 - SQLite 适合 local-first 单用户模式，不应直接视为多租户服务端数据库。
