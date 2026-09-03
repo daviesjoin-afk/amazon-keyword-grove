@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
-后续变更将在下一次批量发布时归档。
+### Added
+
+- English-first GitHub landing page for external/OpenAI review, with a complete Simplified Chinese README preserved at `README.zh-CN.md`.
+- English architecture and trust-boundary documentation at `docs/ARCHITECTURE.en.md`.
+- Lightweight English / Simplified Chinese UI language state with local preference persistence and document-language updates.
+- Bilingual coverage for the application shell, product registry, import wizard, AI settings, workbench navigation, advertising recommendations, and shared keyword status labels.
+- Frontend regression tests for the stable Chinese default, English switching, persistence, and restored language preference.
+
+### Changed
+
+- Reviewer-facing repository documentation now presents project purpose, safety boundaries, verification evidence, architecture, and a suggested code-review path in English before deeper business details.
 
 ## [0.3.2] - 2026-09-03
 
