@@ -93,9 +93,9 @@ def update_ai_config(payload: AIConfigUpdate) -> dict[str, Any]:
     with transaction() as connection:
         existing_row = connection.execute("SELECT value_json FROM app_settings WHERE key = 'ai_config'").fetchone()
         existing = loads(existing_row["value_json"], {}) if existing_row else {}
-        api_key = clean_text(values.get("api_key")) or clean_text(existing.get("api_key"))
+        api_key = "" if values.get("clear_api_key") else clean_text(values.get("api_key")) or clean_text(existing.get("api_key"))
         config = {
-            "provider": clean_text(values.get("provider")) or "mimo",
+            "provider": clean_text(values.get("provider")) or "openrouter",
             "base_url": base_url,
             "model": model,
             "api_key": api_key,

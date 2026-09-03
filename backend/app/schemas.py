@@ -68,10 +68,11 @@ class MappingPreview(BaseModel):
 
 
 class AIConfigUpdate(BaseModel):
-    provider: str = "mimo"
-    base_url: str = "https://api.xiaomimimo.com/v1"
-    model: str = "mimo-v2.5"
+    provider: str = "openrouter"
+    base_url: str = "https://openrouter.ai/api/v1"
+    model: str = "minimax/minimax-m3:free"
     api_key: str | None = None
+    clear_api_key: bool = False
     enabled: bool = False
     timeout_seconds: int = Field(default=60, ge=5, le=300)
 

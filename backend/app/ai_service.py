@@ -33,9 +33,9 @@ def public_ai_config(config: dict[str, Any]) -> dict[str, Any]:
 
     api_key = clean_text(config.get("api_key"))
     return {
-        "provider": clean_text(config.get("provider")) or "mimo",
-        "base_url": clean_text(config.get("base_url")) or "https://api.xiaomimimo.com/v1",
-        "model": clean_text(config.get("model")) or "mimo-v2.5",
+        "provider": clean_text(config.get("provider")) or "openrouter",
+        "base_url": clean_text(config.get("base_url")) or "https://openrouter.ai/api/v1",
+        "model": clean_text(config.get("model")) or "minimax/minimax-m3:free",
         "enabled": bool(config.get("enabled")),
         "timeout_seconds": int(config.get("timeout_seconds") or 60),
         "api_key_set": bool(api_key),

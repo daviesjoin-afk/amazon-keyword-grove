@@ -129,7 +129,7 @@ describe('AISettingsPage safety contracts', () => {
     const saveSpy = vi.spyOn(api, 'saveAIConfig').mockResolvedValue(savedConfig)
     await renderPage()
 
-    const baseUrlInput = container.querySelector('input[placeholder="https://api.xiaomimimo.com/v1"]') as HTMLInputElement
+    const baseUrlInput = container.querySelector('input[placeholder="https://openrouter.ai/api/v1"]') as HTMLInputElement
     const saveButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('保存 AI 配置'))
 
     act(() => setInputValue(baseUrlInput, '   '))

@@ -70,8 +70,8 @@ const trafficLabels: Record<string, KeywordRecord['trafficTypes'][number]> = { n
 
 function normalizeAIConfig(item: Record<string, unknown>): AIConfig {
   return {
-    provider: String(item.provider || 'mimo'), baseUrl: String(item.base_url || 'https://api.xiaomimimo.com/v1'),
-    model: String(item.model || 'mimo-v2.5'), enabled: Boolean(item.enabled), timeoutSeconds: Number(item.timeout_seconds || 60),
+    provider: String(item.provider || 'openrouter'), baseUrl: String(item.base_url || 'https://openrouter.ai/api/v1'),
+    model: String(item.model || 'minimax/minimax-m3:free'), enabled: Boolean(item.enabled), timeoutSeconds: Number(item.timeout_seconds || 60),
     apiKeySet: Boolean(item.api_key_set), apiKeyHint: String(item.api_key_hint || ''), updatedAt: item.updated_at ? String(item.updated_at) : undefined,
   }
 }
