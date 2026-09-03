@@ -10,6 +10,7 @@ import {
   Upload,
 } from 'lucide-react'
 import type { Product } from '../types'
+import { useI18n } from '../i18n'
 
 export type AppView = 'products' | 'workbench' | 'import' | 'history' | 'ai'
 
@@ -20,8 +21,10 @@ interface SidebarProps {
 }
 
 export function Sidebar({ view, product, onNavigate }: SidebarProps) {
+  const { text, numberLocale } = useI18n()
+
   return (
-    <aside className="sidebar" aria-label="主导航">
+    <aside className="sidebar" aria-label={text('主导航', 'Main navigation')}>
       <div className="brand-lockup">
         <div className="brand-mark" aria-hidden="true"><Leaf size={20} strokeWidth={2.2} /></div>
         <div>
@@ -30,32 +33,32 @@ export function Sidebar({ view, product, onNavigate }: SidebarProps) {
         </div>
       </div>
 
-      <div className="sidebar-section-label">工作台</div>
+      <div className="sidebar-section-label">{text('工作台', 'Workspace')}</div>
       <nav className="sidebar-nav">
         <SidebarButton icon={<Boxes size={17} />} active={view === 'products'} onClick={() => onNavigate('products')}>
-          产品中心
+          {text('产品中心', 'Products')}
         </SidebarButton>
         <SidebarButton icon={<LayoutDashboard size={17} />} active={view === 'workbench'} onClick={() => onNavigate('workbench')}>
-          当前词库
+          {text('当前词库', 'Current Library')}
         </SidebarButton>
         <SidebarButton icon={<Upload size={17} />} active={view === 'import'} onClick={() => onNavigate('import')}>
-          导入向导
+          {text('导入向导', 'Import Wizard')}
         </SidebarButton>
         <SidebarButton icon={<Clock3 size={17} />} active={view === 'history'} onClick={() => onNavigate('history')}>
-          导入记录
+          {text('导入记录', 'Import History')}
         </SidebarButton>
         <SidebarButton icon={<Bot size={17} />} active={view === 'ai'} onClick={() => onNavigate('ai')}>
-          AI 语义设置
+          {text('AI 语义设置', 'AI Settings')}
         </SidebarButton>
       </nav>
 
       <div className="sidebar-product-card">
-        <div className="sidebar-product-kicker"><span className="status-dot status-dot-live" /> 当前产品</div>
-        <div className="sidebar-product-name">{product?.name || '尚未选择产品'}</div>
-        <div className="sidebar-product-asins">{product?.referenceAsin || '添加竞品样本后开始'}</div>
+        <div className="sidebar-product-kicker"><span className="status-dot status-dot-live" /> {text('当前产品', 'Current product')}</div>
+        <div className="sidebar-product-name">{product?.name || text('尚未选择产品', 'No product selected')}</div>
+        <div className="sidebar-product-asins">{product?.referenceAsin || text('添加竞品样本后开始', 'Add competitor samples to begin')}</div>
         <div className="sidebar-product-meta">
-          <span><FileSpreadsheet size={13} /> {product?.keywordTotal.toLocaleString('en-US') || '0'} 词</span>
-          <span><BarChart3 size={13} /> {product?.sourceCount || '0'} 来源</span>
+          <span><FileSpreadsheet size={13} /> {product?.keywordTotal.toLocaleString(numberLocale) || '0'} {text('词', 'keywords')}</span>
+          <span><BarChart3 size={13} /> {product?.sourceCount || '0'} {text('来源', 'sources')}</span>
         </div>
       </div>
 
@@ -63,11 +66,11 @@ export function Sidebar({ view, product, onNavigate }: SidebarProps) {
         <div className="local-mode-note">
           <span className="local-mode-icon"><Settings2 size={14} /></span>
           <div>
-            <strong>本地优先</strong>
-            <span>未连接 Amazon</span>
+            <strong>{text('本地优先', 'Local-first')}</strong>
+            <span>{text('未连接 Amazon', 'Amazon not connected')}</span>
           </div>
         </div>
-        <div className="sidebar-version">v0.3.2 · US English</div>
+        <div className="sidebar-version">v0.3.2 · {text('中文 / English', 'English / 中文')}</div>
       </div>
     </aside>
   )
