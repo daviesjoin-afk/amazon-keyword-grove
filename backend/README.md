@@ -21,4 +21,4 @@ python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8765
 
 关键词接口中的 `competitor_coverage` / `competitor_total` 表示相关性占比（例如 `5/20`）；默认低于 30% 的占比不会进入精准或广泛投放。`relevance_score` 是独立的 0–100 语义评分，不再冒充竞品相关性。
 
-调用 `POST /api/products/{product_id}/semantic-review` 时，不传 `keyword_ids` 会选取当前产品全部未审核关键词。服务端默认按 40 条一批、4 批并发调用 MiMo，并对失败批次自动重试；响应会返回 `reviewed`、`successful_batches`、`failed_batches` 和 `partial`。失败批次不会标记为已审核，下一次增量审核只会重试这些未完成关键词。
+调用 `POST /api/products/{product_id}/semantic-review` 时，不传 `keyword_ids` 会选取当前产品全部未审核关键词。服务端默认按 40 条一批、4 批并发调用 MiMo，并对失败批次自动重试；响应会返回 `reviewed`、`successful_batches`、`failed_batches` 和 `partial`。失败批次不会标记为已审核，下一次增量审核只会重试这些未完成关键词。页面使用 `background=true` 启动后台任务，并通过 `GET /api/products/{product_id}/semantic-review/status` 查询刷新安全的进度。
