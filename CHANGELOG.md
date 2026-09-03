@@ -14,6 +14,7 @@
 - Updated GitHub Actions to their current Node 24-compatible v7 releases to remove runner deprecation warnings.
 - Frontend CI no longer allows an empty test suite to pass; backend CI now includes a compile gate before pytest.
 - README now documents design principles, verification evidence, safety boundaries and known deployment limitations.
+- Split reusable API support and AI transport/secret-handling logic out of `backend/app/main.py` while preserving the existing route surface and semantic-review monkeypatch seam.
 
 ## [0.2.1] - 2026-09-03
 

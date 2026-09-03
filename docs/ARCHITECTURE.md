@@ -25,12 +25,16 @@ flowchart LR
 
 `backend/app/` 的主要职责：
 
-- `main.py`：FastAPI 路由、产品/关键词工作流、AI 配置与语义审核编排；
+- `main.py`：FastAPI 应用创建、公开路由和产品/关键词工作流编排；
+- `api_support.py`：API 响应整形、查询过滤、Pydantic 兼容和人工编辑校验；
+- `ai_service.py`：AI 配置读取/脱敏、OpenAI-compatible 请求、连接测试与语义审核辅助判断；
 - `importer.py`：SellerSprite 工作簿/CSV 表头识别、字段清洗、增量导入；
 - `analyzer.py`：关键词相关度、核心词根与广告建议规则；
 - `db.py`：SQLite 初始化、连接和持久化辅助；
 - `schemas.py`：API 请求模型；
 - `utils.py`：数值、货币、百分比与关键词标准化。
+
+`main.py` 保留路由编排和事务边界，但不再直接承担 AI HTTP transport、secret-safe 配置读取或通用响应/过滤工具。这个拆分让后续继续迁移到 router/service 结构时可以逐步进行，而无需一次性改变公开 API。
 
 后端把数据库视为本地业务状态的唯一持久化来源。测试使用独立临时数据库，避免污染真实数据。
 
@@ -59,7 +63,7 @@ flowchart LR
 
 ### AI provider
 
-AI API Key 只存储在本地数据库，读取配置时只返回 `api_key_set` 与尾号提示。语义审核是辅助判断，不能绕过规则安全边界和人工审批。
+AI API Key 只存储在本地数据库，读取配置时只返回 `api_key_set` 与尾号提示。`ai_service.py` 统一负责模型请求与脱敏配置边界；语义审核是辅助判断，不能绕过规则安全边界和人工审批。
 
 ### Imported files
 
@@ -98,7 +102,7 @@ CI 分为两条独立链路：
 
 为保持演进透明，当前已知技术债包括：
 
-- `backend/app/main.py` 仍承担较多编排职责，后续应逐步拆分 router/service；
+- `backend/app/main.py` 已抽离通用 API helper 和 AI transport，但语义审核与 CRUD 路由仍较长；下一步适合按 `products` / `keywords` / `semantic_review` 分 router/service；
 - 前端大组件和单一 CSS 文件体积较大，适合按领域继续拆分；
 - 现阶段测试重点覆盖高风险业务规则和 API 数据边界，UI 交互测试仍可扩展；
 - SQLite 适合 local-first 单用户模式，不应直接视为多租户服务端数据库。
