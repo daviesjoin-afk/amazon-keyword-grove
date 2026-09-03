@@ -30,7 +30,7 @@ Keyword Grove 是一个本地优先的亚马逊 SellerSprite 关键词反查表�
 需要 Python 3.11+、Node.js 20+ 和 pnpm。
 
 ```powershell
-git clone https://github.com/<your-account>/amazon-keyword-grove.git
+git clone https://github.com/daviesjoin-afk/amazon-keyword-grove.git
 cd amazon-keyword-grove
 
 # 首次安装后端依赖
