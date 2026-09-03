@@ -81,7 +81,9 @@ class SemanticReviewRequest(BaseModel):
     # `limit` is the total number of keywords to review. The endpoint sends
     # them to MiMo in bounded batches so the full product library is audited.
     limit: int = Field(default=10000, ge=1, le=10000)
-    batch_size: int = Field(default=40, ge=10, le=100)
+    # Keep an individual model response small enough to complete reliably.
+    # Concurrency still allows multiple batches to run at the same time.
+    batch_size: int = Field(default=10, ge=10, le=100)
     # Only independent network calls run concurrently. Database writes remain
     # deterministic and single-threaded in route orchestration.
     concurrency: int = Field(default=4, ge=1, le=8)

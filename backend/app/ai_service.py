@@ -7,7 +7,7 @@ semantic-review helper logic so transport concerns do not dominate ``main.py``.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 import json
 import time
@@ -140,7 +140,7 @@ def semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candi
         "messages": [
             {
                 "role": "system",
-                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
+                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. Keep reason_zh concise (under 40 Chinese characters). The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
             },
             {
                 "role": "user",
@@ -156,7 +156,7 @@ def semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candi
                 ),
             },
         ],
-        "max_completion_tokens": min(5000, 90 * len(candidates)),
+        "max_completion_tokens": min(2000, 70 * len(candidates)),
         "stream": False,
     }
 
@@ -229,23 +229,41 @@ def run_semantic_batches(
     worker_count = min(max(1, concurrency), len(batch_specs))
     batch_results: dict[int, tuple[dict[int, dict[str, Any]], str | None]] = {}
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mimo-review") as executor:
-        futures = {
-            executor.submit(
-                run_semantic_batch,
-                config,
-                product,
-                candidates,
-                request_json,
-                retries=retries,
-            ): batch_index
-            for batch_index, candidates in batch_specs
-        }
-        for future in as_completed(futures):
-            batch_index = futures[future]
+        remaining_batches = iter(batch_specs)
+        futures: dict[Any, int] = {}
+
+        def submit_next() -> bool:
             try:
-                batch_results[batch_index] = future.result()
-            except Exception as error:  # defensive guard around worker execution
-                batch_results[batch_index] = ({}, semantic_batch_error(error))
+                batch_index, candidates = next(remaining_batches)
+            except StopIteration:
+                return False
+            futures[executor.submit(run_semantic_batch, config, product, candidates, request_json, retries=retries)] = batch_index
+            return True
+
+        for _ in range(worker_count):
+            if not submit_next():
+                break
+        initial_batch_indexes = {batch_index for batch_index, _ in batch_specs[:worker_count]}
+        initial_batch_success: dict[int, bool] = {}
+        while futures:
+            completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in completed:
+                batch_index = futures.pop(future)
+                try:
+                    batch_results[batch_index] = future.result()
+                except Exception as error:  # defensive guard around worker execution
+                    batch_results[batch_index] = ({}, semantic_batch_error(error))
+                if batch_index in initial_batch_indexes:
+                    initial_batch_success[batch_index] = batch_results[batch_index][1] is None
+
+            # A bad endpoint, invalid credentials, or an incompatible response
+            # must not consume the entire library through queued retries. Keep the
+            # first diagnostic batches and do not submit any more work.
+            if len(initial_batch_success) == len(initial_batch_indexes) and not any(initial_batch_success.values()):
+                break
+            for _ in completed:
+                if not submit_next():
+                    break
     return batch_results, worker_count
 
 

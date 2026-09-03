@@ -312,27 +312,47 @@ def _semantic_review_status_snapshot(product_id: int) -> dict[str, Any]:
 
 
 def _run_background_semantic_review(product_id: int, payload: SemanticReviewRequest) -> None:
+    total, initially_reviewed = _semantic_review_counts(product_id)
+    review_target = min(max(0, total - initially_reviewed), payload.limit)
+    window_size = payload.batch_size * payload.concurrency
+    completed_batches = 0
+    successful_batches = 0
+    failed_batches: list[dict[str, Any]] = []
+
     def on_batch_complete(batch_number: int, count: int, success: bool, error: str | None) -> None:
         with _REVIEW_JOBS_LOCK:
             state = _REVIEW_JOBS.get(product_id)
             if state is None:
                 return
-            state["batches_completed"] = max(int(state.get("batches_completed") or 0), batch_number)
+            state["batches_completed"] = max(int(state.get("batches_completed") or 0), completed_batches + batch_number)
             if success:
                 state["successful_batches"] = int(state.get("successful_batches") or 0) + 1
-            elif error:
-                state.setdefault("failed_batches", []).append({"batch": batch_number, "count": count, "error": error})
             state["updated_at"] = now_iso()
 
     try:
-        result = _semantic_review_sync(product_id, payload, progress_callback=on_batch_complete)
+        reviewed_in_job = 0
+        partial = False
+        while reviewed_in_job < review_target:
+            window_payload = SemanticReviewRequest(**(_model_dict(payload) | {"limit": min(window_size, review_target - reviewed_in_job)}))
+            result = _semantic_review_sync(product_id, window_payload, progress_callback=on_batch_complete)
+            completed_batches += int(result.get("batches") or 0)
+            successful_batches += int(result.get("successful_batches") or 0)
+            for failed in result.get("failed_batches") or []:
+                failed_batches.append({**failed, "batch": completed_batches - int(result.get("batches") or 0) + int(failed.get("batch") or 0)})
+            reviewed_now = int(result.get("reviewed") or 0)
+            reviewed_in_job += reviewed_now
+            if result.get("partial") or not reviewed_now:
+                partial = True
+                break
         with _REVIEW_JOBS_LOCK:
             state = _REVIEW_JOBS.get(product_id)
             if state is not None:
-                state["status"] = "partial" if result.get("partial") else "completed"
-                state["failed_batches"] = result.get("failed_batches") or []
-                state["successful_batches"] = int(result.get("successful_batches") or 0)
-                state["error"] = (result.get("failed_batches") or [{}])[0].get("error") if result.get("partial") else None
+                _, reviewed = _semantic_review_counts(product_id)
+                state["status"] = "partial" if partial else "completed" if reviewed >= total else "idle"
+                state["batches_completed"] = completed_batches
+                state["successful_batches"] = successful_batches
+                state["failed_batches"] = failed_batches
+                state["error"] = (failed_batches or [{}])[0].get("error") if partial else None
                 state["completed_at"] = now_iso()
                 state["updated_at"] = state["completed_at"]
     except Exception as error:
