@@ -44,6 +44,7 @@ function normalizeAIConfig(item: Record<string, unknown>): AIConfig {
 
 function normalizeProduct(item: BackendProduct, stats?: Record<string, unknown>): Product {
   const byStrength = (stats?.by_match_strength || {}) as Record<string, number>
+  const sourceCount = Number(stats?.source_asins ?? item.source_asin_count ?? 0)
   const savedCoreTerms = Array.isArray(item.core_terms) ? item.core_terms.map((term) => String(term).trim().toLowerCase()).filter(Boolean) : []
   const title = String(item.product_title || '').toLowerCase()
   const coreTerms = [...new Set(savedCoreTerms)]
@@ -54,11 +55,11 @@ function normalizeProduct(item: BackendProduct, stats?: Record<string, unknown>)
   const roots = [...new Set([...coreTerms, ...supportingRoots])]
   return {
     id: String(item.id), name: String(item.name || '未命名产品'), selfAsin: item.asin ? String(item.asin) : undefined,
-    referenceAsin: '竞品集合', site: String(item.site || 'US'), language: String(item.language || 'en_US'), category: String(item.category || '未分类'),
+    referenceAsin: sourceCount > 0 ? '竞品集合' : '尚未导入', site: String(item.site || 'US'), language: String(item.language || 'en_US'), category: String(item.category || '未分类'),
     status: item.status === 'archived' ? '归档' : item.status === 'preparing' ? '准备中' : '在售', title: String(item.product_title || ''),
     bullets: (item.bullet_points || []) as string[], keywordTotal: Number(stats?.total_keywords ?? item.keyword_count ?? 0),
     strongCount: Number(byStrength.strong ?? item.strong_keyword_count ?? 0), mediumCount: Number(byStrength.medium ?? 0), weakCount: Number(byStrength.weak ?? 0),
-    sourceCount: Number(stats?.source_asins ?? item.source_asin_count ?? 0), lastImportedAt: String(item.updated_at || '尚未导入'), importHealth: 100,
+    sourceCount, lastImportedAt: String(item.updated_at || '尚未导入'), importHealth: 100,
     coreTerms, roots,
   }
 }
