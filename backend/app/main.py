@@ -23,7 +23,7 @@ from .schemas import AIConfigUpdate, KeywordUpdate, ProductCreate, ProductUpdate
 from .utils import clean_text, dumps, loads, now_iso, tokens
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 # Bumped when the local recommendation policy changes.  Existing decisions are
 # invalidated by the migration/reanalysis script so they cannot silently mix
 # the old exact-only root policy with the broad-root policy.

@@ -1,6 +1,6 @@
 # Keyword Grove · 亚马逊关键词库管理工具
 
-**Version 0.2.0 · MIT License**
+**Version 0.2.1 · MIT License**
 
 Keyword Grove 是一个本地优先的亚马逊 SellerSprite 关键词反查表管理工具。它面向多个产品和竞品 ASIN，使用产品标题、五点、核心词根、内置规则和 MiMo 语义审核生成可下载的广告建议草稿。
 

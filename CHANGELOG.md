@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] - 2026-09-03
+
+### Fixed
+
+- Declared the frontend workspace package in `pnpm-workspace.yaml` so frozen-lockfile installs work in GitHub Actions and fresh clones.
+
 ## [0.2.0] - 2026-09-03
 
 ### Added
