@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/daviesjoin-afk/amazon-keyword-grove/actions/workflows/ci.yml/badge.svg)](https://github.com/daviesjoin-afk/amazon-keyword-grove/actions/workflows/ci.yml)
 
-**Version 0.2.1 · MIT License · Local-first**
+**Version 0.3.0 · MIT License · Local-first**
 
 Keyword Grove 是一个本地优先的亚马逊 SellerSprite 关键词反查表管理工具。它面向多个产品和竞品 ASIN，使用产品标题、五点、核心词根、内置规则和 MiMo 语义审核生成可下载的广告建议草稿。
 
@@ -19,6 +19,7 @@ Keyword Grove 是一个本地优先的亚马逊 SellerSprite 关键词反查表�
 - 产品资料维护：自定义名称、标题、五点和自动推断的多词核心词根
 - 强/中/弱/不相关分类、词根分析、月搜索量默认降序排序
 - 双重审核：内置规则预审 + MiMo v2.5 语义审核；支持全量审核和增量审核，审核结果持久化
+- 语义审核使用有上限的并发网络批次与有限重试；成功批次保留、失败批次显式报告并保持待审核，SQLite 写入仍按批次单线程落库
 - 广告建议分为精准投放、广泛投放、否定精准、否定词组和观察；投放不提供词组匹配
 - 低相关度、低竞品覆盖或低搜索量词会被降级为观察；否定词组保留更严格的冲突检查
 - 审核理由、相关度、置信度、风险、竞品覆盖和证据详情；各类建议均可导出 CSV
