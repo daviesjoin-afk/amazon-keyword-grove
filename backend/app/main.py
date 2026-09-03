@@ -40,7 +40,7 @@ from .schemas import AIConfigUpdate, KeywordUpdate, ProductCreate, ProductUpdate
 from .utils import clean_text, dumps, loads, now_iso, tokens
 
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 
 
 app = FastAPI(title="Amazon Keyword Library API", version=APP_VERSION)
