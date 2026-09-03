@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from .analyzer import minimum_competitor_coverage
 from .utils import clean_text, dumps, loads
 
 
@@ -120,14 +121,32 @@ def keyword_response(row: Any, connection: Any | None = None) -> dict[str, Any]:
     data["suggested_action"] = action
     data["suggested_action_label"] = ACTION_LABELS.get(action, action)
     data["suggested_match_type_resolved"] = data.get("manual_action") or data.get("suggested_match_type")
+    source_rows = []
     if connection is not None:
         source_rows = connection.execute(
             "SELECT asin, first_import_id, last_import_id, first_seen_at, last_seen_at FROM keyword_sources WHERE keyword_id = ? ORDER BY asin",
             (data["id"],),
         ).fetchall()
+        if source_rows:
+            data["related_asins"] = [source["asin"] for source in source_rows]
         data["sources"] = [dict(source) for source in source_rows]
     else:
         data["sources"] = []
+    observed_coverage = data.get("related_product_count")
+    relation_coverage = len(source_rows) or len(data.get("related_asins") or [])
+    data["competitor_coverage"] = max(0, int(max(int(observed_coverage), relation_coverage) if observed_coverage is not None else relation_coverage))
+    competitor_total = 0
+    if connection is not None and data.get("product_id") is not None:
+        competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (data["product_id"],)).fetchone()[0])
+    data["competitor_total"] = max(0, competitor_total)
+    action = data.get("suggested_action")
+    if not data["manual_locked"] and not data.get("manual_action") and action in {"exact", "broad"} and data["competitor_total"]:
+        minimum = minimum_competitor_coverage(data["competitor_total"])
+        if data["competitor_coverage"] < minimum:
+            data["suggested_action"] = "observe"
+            data["suggested_action_label"] = ACTION_LABELS["observe"]
+            data["suggested_match_type_resolved"] = "observe"
+            data["advice_reason"] = f"竞品覆盖仅 {data['competitor_coverage']}/{data['competitor_total']}，低于 {minimum}/{data['competitor_total']}（30%相关性门槛）；先观察，不直接投放"
     return data
 
 

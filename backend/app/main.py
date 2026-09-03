@@ -6,7 +6,8 @@ import csv
 import io
 import math
 import os
-from typing import Any
+import threading
+from typing import Any, Callable
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,12 @@ from .utils import clean_text, dumps, loads, now_iso, tokens
 
 
 APP_VERSION = "0.2.1"
+
+# The browser starts reviews as a background job so a refresh does not lose
+# the visible progress. Decisions themselves remain durable in SQLite; this
+# in-memory registry only tracks the live task and its batch counters.
+_REVIEW_JOBS: dict[int, dict[str, Any]] = {}
+_REVIEW_JOBS_LOCK = threading.Lock()
 
 
 app = FastAPI(title="Amazon Keyword Library API", version=APP_VERSION)
@@ -109,8 +116,11 @@ def test_ai_config() -> dict[str, Any]:
     return _test_ai_connection(_ai_config_or_error())
 
 
-@app.post("/api/products/{product_id}/semantic-review")
-def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
+def _semantic_review_sync(
+    product_id: int,
+    payload: SemanticReviewRequest,
+    progress_callback: Callable[[int, int, bool, str | None], None] | None = None,
+) -> dict[str, Any]:
     """Run local-rule candidates through bounded concurrent semantic batches."""
 
     config = _ai_config_or_error()
@@ -163,6 +173,8 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
         reviews_by_id, batch_error = batch_results.get(batch_index, ({}, "批次没有返回结果"))
         if batch_error:
             failed_batches.append({"batch": batch_index + 1, "count": len(candidates), "error": batch_error})
+            if progress_callback:
+                progress_callback(batch_index + 1, len(candidates), False, batch_error)
             continue
 
         timestamp = now_iso()
@@ -241,6 +253,8 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                     connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?", (timestamp, signature, timestamp, keyword_id))
                 connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'mimo_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"]}), timestamp))
                 applied.append({"id": keyword_id, "keyword": candidate["keyword"], "decision": decision, "relevance_score": score, "reason": reason, "manual_locked": candidate["manual_locked"]})
+        if progress_callback:
+            progress_callback(batch_index + 1, len(candidates), True, None)
 
     if failed_batches and not applied:
         first_error = failed_batches[0]["error"]
@@ -258,6 +272,124 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
         "concurrency": worker_count,
         "items": applied,
     }
+
+
+def _semantic_review_counts(product_id: int) -> tuple[int, int]:
+    with read_connection() as connection:
+        row = connection.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN semantic_reviewed = 1 THEN 1 ELSE 0 END) AS reviewed
+               FROM keywords WHERE product_id = ? AND deleted_at IS NULL""",
+            (product_id,),
+        ).fetchone()
+    return int(row["total"] or 0), int(row["reviewed"] or 0)
+
+
+def _semantic_review_status_snapshot(product_id: int) -> dict[str, Any]:
+    total, reviewed = _semantic_review_counts(product_id)
+    with _REVIEW_JOBS_LOCK:
+        state = dict(_REVIEW_JOBS.get(product_id) or {})
+    status = state.get("status", "idle")
+    if status == "completed" and total > reviewed:
+        status = "idle"
+    return {
+        "product_id": product_id,
+        "status": status,
+        "reviewed": reviewed,
+        "total": total,
+        "pending": max(0, total - reviewed),
+        "batches": int(state.get("batches_total") or 0),
+        "batches_total": int(state.get("batches_total") or 0),
+        "batches_completed": int(state.get("batches_completed") or 0),
+        "successful_batches": int(state.get("successful_batches") or 0),
+        "failed_batches": state.get("failed_batches") or [],
+        "started_at": state.get("started_at"),
+        "updated_at": state.get("updated_at"),
+        "completed_at": state.get("completed_at"),
+        "error": state.get("error"),
+        "items": [],
+    }
+
+
+def _run_background_semantic_review(product_id: int, payload: SemanticReviewRequest) -> None:
+    def on_batch_complete(batch_number: int, count: int, success: bool, error: str | None) -> None:
+        with _REVIEW_JOBS_LOCK:
+            state = _REVIEW_JOBS.get(product_id)
+            if state is None:
+                return
+            state["batches_completed"] = max(int(state.get("batches_completed") or 0), batch_number)
+            if success:
+                state["successful_batches"] = int(state.get("successful_batches") or 0) + 1
+            elif error:
+                state.setdefault("failed_batches", []).append({"batch": batch_number, "count": count, "error": error})
+            state["updated_at"] = now_iso()
+
+    try:
+        result = _semantic_review_sync(product_id, payload, progress_callback=on_batch_complete)
+        with _REVIEW_JOBS_LOCK:
+            state = _REVIEW_JOBS.get(product_id)
+            if state is not None:
+                state["status"] = "partial" if result.get("partial") else "completed"
+                state["failed_batches"] = result.get("failed_batches") or []
+                state["successful_batches"] = int(result.get("successful_batches") or 0)
+                state["error"] = (result.get("failed_batches") or [{}])[0].get("error") if result.get("partial") else None
+                state["completed_at"] = now_iso()
+                state["updated_at"] = state["completed_at"]
+    except Exception as error:
+        with _REVIEW_JOBS_LOCK:
+            state = _REVIEW_JOBS.get(product_id)
+            if state is not None:
+                state["status"] = "failed"
+                state["error"] = str(error)
+                state["completed_at"] = now_iso()
+                state["updated_at"] = state["completed_at"]
+
+
+def _start_background_semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
+    with read_connection() as connection:
+        _get_product(connection, product_id)
+    total, reviewed = _semantic_review_counts(product_id)
+    if not total:
+        _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
+    pending = max(0, total - reviewed)
+    if not pending:
+        return _semantic_review_status_snapshot(product_id)
+    candidate_count = min(pending, payload.limit)
+    batch_total = math.ceil(candidate_count / payload.batch_size)
+    already_running = False
+    with _REVIEW_JOBS_LOCK:
+        current = _REVIEW_JOBS.get(product_id)
+        if current and current.get("status") == "running":
+            already_running = True
+        else:
+            timestamp = now_iso()
+            _REVIEW_JOBS[product_id] = {
+                "status": "running", "batches_total": batch_total, "batches_completed": 0,
+                "successful_batches": 0, "failed_batches": [], "started_at": timestamp,
+                "updated_at": timestamp, "completed_at": None, "error": None,
+            }
+    if already_running:
+        return _semantic_review_status_snapshot(product_id)
+    thread = threading.Thread(target=_run_background_semantic_review, args=(product_id, payload), name=f"mimo-review-{product_id}", daemon=True)
+    thread.start()
+    return _semantic_review_status_snapshot(product_id)
+
+
+@app.post("/api/products/{product_id}/semantic-review")
+def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
+    """Start refresh-safe background review or run the synchronous API mode."""
+
+    if payload.background:
+        _ai_config_or_error()
+        return _start_background_semantic_review(product_id, payload)
+    return _semantic_review_sync(product_id, payload)
+
+
+@app.get("/api/products/{product_id}/semantic-review/status")
+def semantic_review_status(product_id: int) -> dict[str, Any]:
+    with read_connection() as connection:
+        _get_product(connection, product_id)
+    return _semantic_review_status_snapshot(product_id)
 
 
 @app.get("/api/products")
@@ -478,7 +610,7 @@ def list_keywords(
         _get_product(connection, product_id)
         total = int(connection.execute(f"SELECT COUNT(*) FROM keywords k WHERE {where}", params).fetchone()[0])
         rows = connection.execute(f"SELECT k.* FROM keywords k WHERE {where} ORDER BY {sort_expression} {sort_order.upper()}, k.id ASC LIMIT ? OFFSET ?", [*params, page_size, (page - 1) * page_size]).fetchall()
-        return {"items": [_keyword_response(row) for row in rows], "page": page, "page_size": page_size, "total": total, "pages": math.ceil(total / page_size) if total else 0}
+        return {"items": [_keyword_response(row, connection) for row in rows], "page": page, "page_size": page_size, "total": total, "pages": math.ceil(total / page_size) if total else 0}
 
 
 # Register this static path before the dynamic ``{keyword_id}`` route below;

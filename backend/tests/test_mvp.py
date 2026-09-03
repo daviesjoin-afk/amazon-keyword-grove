@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -285,6 +286,41 @@ def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monke
     assert reviewed.status_code == 200, reviewed.text
     result = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 10}).json()["items"][0]
     assert result["suggested_action"] == "observe"
+
+
+def test_background_semantic_review_reports_refresh_safe_progress(client, monkeypatch):
+    configured = client.put(
+        "/api/ai-config",
+        json={"provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "model": "mimo-v2.5", "api_key": "local-test-key-progress", "enabled": True},
+    )
+    assert configured.status_code == 200
+    created = client.post("/api/products", json={"name": "Progress review product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
+    product_id = created.json()["id"]
+    rows = [["关键词", "相关ASIN", "月搜索量"]] + [[f"boxwood wreath progress {index}", "B0TEST0001", 500 + index] for index in range(11)]
+    imported = client.post(f"/api/products/{product_id}/imports", files={"file": ("progress.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert imported.status_code == 200, imported.text
+
+    def fake_ai(_config, request_payload):
+        time.sleep(0.02)
+        candidates = json.loads(request_payload["messages"][1]["content"])["candidates"]
+        return {"reviews": [{"id": item["id"], "decision": "exact", "relevance_score": 90, "confidence": 0.9, "reason_zh": "进度测试"} for item in candidates]}
+
+    monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
+    started = client.post(f"/api/products/{product_id}/semantic-review", json={"background": True, "batch_size": 10, "concurrency": 1})
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] in {"running", "completed"}
+    final_status = started.json()
+    for _ in range(80):
+        final_status = client.get(f"/api/products/{product_id}/semantic-review/status").json()
+        if final_status["status"] in {"completed", "partial", "failed"}:
+            break
+        time.sleep(0.025)
+    assert final_status["status"] == "completed"
+    assert final_status["reviewed"] == 11
+    assert final_status["total"] == 11
+    assert final_status["pending"] == 0
+    assert final_status["batches_total"] == 2
+    assert final_status["batches_completed"] == 2
 
 
 @pytest.mark.skipif(not os.getenv("SELLER_SPRITE_FIXTURE"), reason="set SELLER_SPRITE_FIXTURE to run the real workbook acceptance test")
