@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -89,7 +90,24 @@ CORE_TITLE_MODIFIERS = {
 }
 CORE_TITLE_BOUNDARY = re.compile(r"\b(?:for|with|from|by|in|on|at|and)\b")
 MIN_TARGETING_SEARCH_VOLUME = 300
-MIN_COMPETITOR_COVERAGE = 6
+MIN_COMPETITOR_COVERAGE_RATIO = 0.30
+
+
+def minimum_competitor_coverage(total: int) -> int:
+    """Return the minimum ASIN count for a 30% product-coverage signal."""
+
+    return max(1, math.ceil(max(1, int(total)) * MIN_COMPETITOR_COVERAGE_RATIO))
+
+
+def _competitor_coverage(row: dict[str, Any], product: dict[str, Any]) -> tuple[int | None, int]:
+    """Return the observed competitor coverage and its product denominator."""
+
+    raw_count = row.get("related_product_count")
+    if raw_count is None:
+        raw_count = row.get("competitor_coverage")
+    count = None if raw_count is None else max(0, int(raw_count))
+    raw_total = row.get("competitor_total") or product.get("competitor_total") or 20
+    return count, max(1, int(raw_total))
 
 
 @dataclass
@@ -346,7 +364,8 @@ def recommendation_for(
         basis.append("conflicting_terms=" + ",".join(analysis.conflicting_terms[:8]))
     if row.get("monthly_search_volume") is not None:
         basis.append("monthly_search_volume")
-    if row.get("related_product_count") is not None:
+    coverage_count, coverage_total = _competitor_coverage(row, product)
+    if coverage_count is not None:
         basis.append("competitor_coverage")
     if row.get("aba_weekly_rank") is not None:
         basis.append("aba_weekly_rank")
@@ -426,13 +445,14 @@ def recommendation_for(
         label = "观察/暂不投放"
         reason = "弱相关或缺少明确产品匹配；不能仅凭低搜索量或卖家精灵数据自动否定"
 
-    low_coverage = row.get("related_product_count") is not None and int(row["related_product_count"]) < MIN_COMPETITOR_COVERAGE
-    if low_coverage and action in {"exact", "broad"} and not _is_exact_core_term(keyword, product) and not _has_product_anchor(keyword, product) and analysis.score < 90:
+    minimum_coverage = minimum_competitor_coverage(coverage_total)
+    low_coverage = coverage_count is not None and coverage_count < minimum_coverage
+    if low_coverage and action in {"exact", "broad"}:
         action = "observe"
         match_type = None
         risk = "medium"
         label = "观察/暂不投放"
-        reason = f"竞品覆盖仅 {int(row['related_product_count'])}/20，低于 {MIN_COMPETITOR_COVERAGE}/20 且相关度未达精准门槛；先观察，不直接投放"
+        reason = f"竞品覆盖仅 {coverage_count}/{coverage_total}，低于 {minimum_coverage}/{coverage_total}（30%相关性门槛）；先观察，不直接投放"
 
     low_volume = row.get("monthly_search_volume") is not None and int(row["monthly_search_volume"]) < MIN_TARGETING_SEARCH_VOLUME
     if low_volume and action in {"exact", "broad"}:

@@ -405,9 +405,10 @@ def _upsert_keyword_source(connection: Any, keyword_id: int, product_id: int, as
 
 def _update_automatic_analysis(connection: Any, product_id: int, product: dict[str, Any]) -> None:
     rows = [dict(row) for row in connection.execute("SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchall()]
+    competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (product_id,)).fetchone()[0])
     safe_terms, conflicts = compute_safe_negative_phrase_terms(rows, product)
     for row in rows:
-        metric = row
+        metric = {**row, "competitor_total": competitor_total}
         fields = _analysis_fields(row["keyword_raw"], product, metric, safe_terms=safe_terms, negative_conflicts=conflicts)
         connection.execute(
             """UPDATE keywords SET category_auto = ?, category_confidence = ?, classification_reason_json = ?,
@@ -448,6 +449,9 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                     continue
                 normalized = normalize_keyword(keyword_raw)
                 metric = parse_metric_values(parsed_row)
+                # Use the current workbook's complete competitor set as the
+                # denominator for the relevance ratio during first-pass rules.
+                metric["competitor_total"] = len(parsed.source_asins)
                 analysis = _analysis_fields(keyword_raw, product, metric)
                 existing = connection.execute("SELECT id, manual_locked FROM keywords WHERE product_id = ? AND site = ? AND keyword_normalized = ?", (product_id, product.get("site") or "US", normalized)).fetchone()
                 values = {

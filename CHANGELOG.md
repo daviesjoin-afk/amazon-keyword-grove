@@ -9,6 +9,10 @@
 - Architecture/trust-boundary documentation, contribution guidance and a pull-request quality checklist.
 - Bounded concurrent semantic-review network batches with retries and explicit partial-failure reporting; successful batches are retained while failed batches remain pending.
 
+### Changed
+
+- 将相关性展示统一为竞品 ASIN 占比（如 `5/20`），保留独立的 0–100 语义评分，并让接口按产品实际竞品数动态计算分母。
+
 ### Maintenance
 
 - Repository hygiene baseline: fixed the clone URL, hardened CI permissions and timeouts, added dependency checks, and enabled weekly Dependabot updates.

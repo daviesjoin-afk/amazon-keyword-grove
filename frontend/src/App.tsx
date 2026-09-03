@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Leaf, RefreshCw, X } from 'lucide-react'
 import { api, USE_MOCK } from './api/client'
 import type { FieldMapping, ImportBatch, KeywordRecord, Product, ProductCopyPayload, ProductPayload } from './types'
+import { relevanceRatio } from './keywordMetrics'
 import { ImportWizard } from './components/ImportWizard'
 import { AISettingsPage } from './components/AISettingsPage'
 import { KeywordDrawer } from './components/KeywordDrawer'
@@ -124,8 +125,8 @@ export default function App() {
   }
 
   function exportKeywords() {
-    const headers = ['关键词', '翻译', '相关性', '搜索量', '竞品覆盖', '流量类型', '建议动作', '置信度', '风险', '审批状态']
-    const rows = [...keywords].sort((left, right) => (right.monthlySearchVolume ?? -1) - (left.monthlySearchVolume ?? -1)).map((item) => [item.keyword, item.translation, item.relevanceScore, item.monthlySearchVolume ?? '', `${item.competitorCoverage}/${item.competitorTotal}`, item.trafficTypes.join('/'), item.suggestedAction, item.confidence, item.risk, item.approvalStatus])
+    const headers = ['关键词', '翻译', '相关性（竞品占比）', '语义评分', '搜索量', '流量类型', '建议动作', '置信度', '风险', '审批状态']
+    const rows = [...keywords].sort((left, right) => (right.monthlySearchVolume ?? -1) - (left.monthlySearchVolume ?? -1)).map((item) => [item.keyword, item.translation, relevanceRatio(item), item.relevanceScore, item.monthlySearchVolume ?? '', item.trafficTypes.join('/'), item.suggestedAction, item.confidence, item.risk, item.approvalStatus])
     const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n')
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)

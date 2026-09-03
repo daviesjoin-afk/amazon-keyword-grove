@@ -1,6 +1,7 @@
 import { ArrowUpRight, CheckCircle2, ChevronRight, CircleHelp, Database, FileCheck2, Hash, Layers3, Megaphone, ShieldAlert, Sparkles, Target, TrendingUp, UsersRound } from 'lucide-react'
 import type { ImportBatch, KeywordRecord, Product } from '../types'
 import { ActionPill, MatchPill } from './StatusPill'
+import { relevanceRatio } from '../keywordMetrics'
 
 interface OverviewPanelProps {
   product: Product
@@ -113,7 +114,7 @@ export function OverviewPanel({ product, keywords, batches, onOpenKeywords, onOp
           </div>
           <div className="mini-keyword-list">
             {topKeywords.map((keyword) => <button className="mini-keyword-row" type="button" key={keyword.id} onClick={() => onSelectKeyword(keyword)}>
-              <div><strong>{keyword.keyword}</strong><span>{keyword.relevanceReason}</span></div><div className="mini-keyword-score"><b>{keyword.relevanceScore}</b><small>相关性</small></div>
+              <div><strong>{keyword.keyword}</strong><span>{keyword.relevanceReason}</span></div><div className="mini-keyword-score"><b>{relevanceRatio(keyword)}</b><small>相关性</small></div>
             </button>)}
           </div>
           <button className="panel-link-row" type="button" onClick={onOpenKeywords}>打开强匹配筛选 <ArrowUpRight size={14} /></button>

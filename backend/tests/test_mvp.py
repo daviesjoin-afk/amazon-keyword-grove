@@ -54,6 +54,8 @@ def test_relevance_and_safe_ad_recommendation_rules():
     long_tail = analyze_keyword("boxwood wreath for front door", product)
     long_tail_advice = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000}, product)
     assert long_tail_advice["action"] == "exact"
+    low_coverage_core = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000, "related_product_count": 5, "competitor_total": 20}, product)
+    assert low_coverage_core["action"] == "observe"
 
     product["excluded_terms"] = ["iphone case"]
     conflict = analyze_keyword("iphone case", product)
@@ -133,6 +135,8 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
     assert listing.json()["total"] == 1
     keyword = listing.json()["items"][0]
     assert keyword["ppc_bid"] is not None
+    assert keyword["competitor_coverage"] == 2
+    assert keyword["competitor_total"] == 2
     # The second row's anomaly was followed by a valid update; inspect history
     # to prove it was retained as raw data and never interpreted as a bid.
     detail = client.get(f"/api/products/{product_id}/keywords/{keyword['id']}")

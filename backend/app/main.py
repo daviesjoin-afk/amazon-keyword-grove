@@ -22,7 +22,7 @@ from .ai_service import (
     semantic_review_signature as _semantic_review_signature,
     test_ai_connection as _test_ai_connection,
 )
-from .analyzer import MIN_COMPETITOR_COVERAGE, MIN_TARGETING_SEARCH_VOLUME, _clear_generic_decor_mismatch, _has_product_anchor, _is_generic_decor_without_anchor, analyze_keyword, infer_core_terms
+from .analyzer import MIN_COMPETITOR_COVERAGE_RATIO, MIN_TARGETING_SEARCH_VOLUME, _clear_generic_decor_mismatch, _has_product_anchor, _is_generic_decor_without_anchor, analyze_keyword, infer_core_terms, minimum_competitor_coverage
 from .api_support import (
     api_error as _api_error,
     get_product as _get_product,
@@ -117,6 +117,9 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
     with read_connection() as connection:
         product_row = _get_product(connection, product_id)
         product = _product_dict(product_row)
+        competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (product_id,)).fetchone()[0])
+        source_count_rows = connection.execute("SELECT keyword_id, COUNT(*) AS count FROM keyword_sources WHERE product_id = ? GROUP BY keyword_id", (product_id,)).fetchall()
+        keyword_source_counts = {int(item["keyword_id"]): int(item["count"]) for item in source_count_rows}
         if payload.keyword_ids:
             placeholders = ", ".join("?" for _ in payload.keyword_ids)
             rows = connection.execute(f"SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND id IN ({placeholders}) ORDER BY id ASC LIMIT ?", (product_id, *payload.keyword_ids, payload.limit)).fetchall()
@@ -134,7 +137,7 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
         return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": 0, "batches": 0, "already_reviewed": True, "items": []}
 
     all_candidates = [
-        {"id": int(row["id"]), "keyword": row["keyword_raw"], "translation": row["keyword_translation"], "rule_score": row["relevance_score"], "rule_strength": row["match_strength_auto"], "rule_action": row["suggested_action_auto"], "monthly_search_volume": row["monthly_search_volume"], "source_count": len(loads(row["related_asins_json"], [])), "manual_locked": bool(row["manual_locked"])}
+        {"id": int(row["id"]), "keyword": row["keyword_raw"], "translation": row["keyword_translation"], "rule_score": row["relevance_score"], "rule_strength": row["match_strength_auto"], "rule_action": row["suggested_action_auto"], "monthly_search_volume": row["monthly_search_volume"], "source_count": max(0, int(row["related_product_count"] if row["related_product_count"] is not None else keyword_source_counts.get(int(row["id"]), len(loads(row["related_asins_json"], []))) or 0)), "source_total": competitor_total, "manual_locked": bool(row["manual_locked"])}
         for row in rows
     ]
     actions = {"exact", "broad", "negative_exact", "negative_phrase", "observe"}
@@ -177,9 +180,10 @@ def semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str
                 if decision in {"exact", "broad"} and candidate["monthly_search_volume"] is not None and int(candidate["monthly_search_volume"]) < MIN_TARGETING_SEARCH_VOLUME:
                     decision = "observe"
                     reason += f"；月搜索量仅 {int(candidate['monthly_search_volume'])}，低于 {MIN_TARGETING_SEARCH_VOLUME} 投放门槛，降为观察"
-                if decision in {"exact", "broad"} and candidate["source_count"] < MIN_COMPETITOR_COVERAGE and keyword_text not in core_terms and not _has_product_anchor(keyword_text, product) and score < 90:
+                minimum_coverage = minimum_competitor_coverage(candidate["source_total"] or 20)
+                if decision in {"exact", "broad"} and candidate["source_count"] < minimum_coverage:
                     decision = "observe"
-                    reason += f"；竞品覆盖仅 {candidate['source_count']}/20，低于 {MIN_COMPETITOR_COVERAGE}/20 且相关度未达精准门槛，降为观察"
+                    reason += f"；竞品覆盖仅 {candidate['source_count']}/{candidate['source_total'] or 20}，低于 {minimum_coverage}/{candidate['source_total'] or 20}（{MIN_COMPETITOR_COVERAGE_RATIO:.0%}相关性门槛），降为观察"
                 # Keep a clear, low-scoring generic-decor mismatch as a
                 # negative-exact draft even if the model answers observe or
                 # exact. This is the double-audit guard for cases such as

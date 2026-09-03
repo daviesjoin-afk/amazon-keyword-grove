@@ -1,6 +1,7 @@
 import { CheckCircle2, Download, Eye, FileDown, Megaphone, RefreshCw, ShieldAlert, Target, Waves } from 'lucide-react'
 import type { KeywordRecord, Product, SuggestedAction } from '../types'
 import { ConfidencePill } from './StatusPill'
+import { relevanceRatio } from '../keywordMetrics'
 
 interface AdRecommendationsProps {
   product: Product
@@ -34,8 +35,8 @@ export function AdRecommendations({ product, keywords, onSelectKeyword, onSemant
   const pendingNegativePhrase = keywords.filter((keyword) => !keyword.semanticReviewed && keyword.suggestedAction === '否定词组').length
 
   function download(group: RecommendationGroup, rows: KeywordRecord[]) {
-    const headers = ['关键词', '相关性', '置信度', '风险', '理由', '竞品覆盖', '月搜索量']
-    const values = rows.map((item) => [item.keyword, item.relevanceScore, item.confidence, item.risk, item.suggestionReason, `${item.competitorCoverage}/${item.competitorTotal}`, item.monthlySearchVolume ?? ''])
+    const headers = ['关键词', '相关性（竞品占比）', '语义评分', '置信度', '风险', '理由', '月搜索量']
+    const values = rows.map((item) => [item.keyword, relevanceRatio(item), item.relevanceScore, item.confidence, item.risk, item.suggestionReason, item.monthlySearchVolume ?? ''])
     const csv = [headers, ...values].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n')
     const link = document.createElement('a')
     link.href = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
@@ -58,7 +59,7 @@ export function AdRecommendations({ product, keywords, onSelectKeyword, onSemant
           <div className="ad-card-head"><div className="ad-card-title"><span className="ad-card-icon"><Icon size={17} /></span><div><span className="panel-kicker">{group.eyebrow}</span><h2>{group.title}</h2></div></div><button className="icon-button small" type="button" title={`下载${group.title}建议`} aria-label={`下载${group.title}建议`} onClick={() => download(group, rows)}><Download size={15} /></button></div>
           <p className="ad-card-description">{group.description}</p>
           <div className="ad-card-meta"><strong>{rows.length.toLocaleString('en-US')}</strong><span>条建议词</span><button className="text-button" type="button" onClick={() => download(group, rows)}><FileDown size={13} />下载 CSV</button></div>
-          <div className="ad-suggestion-list">{rows.length ? rows.map((item) => <button className="ad-suggestion-row" type="button" key={item.id} onClick={() => onSelectKeyword(item)}><span className="ad-suggestion-main"><strong>{item.keyword}</strong><small>{item.suggestionReason.replace(/^MiMo 语义审核：/, '')}</small></span><span className="ad-suggestion-metric"><b>{item.relevanceScore}</b><small>相关性</small></span><ConfidencePill value={item.confidence} /></button>) : <div className="ad-empty"><CheckCircle2 size={17} /><span>{pending > 0 ? '完成 MiMo 二审后，符合条件的建议会显示在这里。' : '本次双重审核没有通过该动作的安全门槛，当前无可导出建议词。'}</span></div>}</div>
+          <div className="ad-suggestion-list">{rows.length ? rows.map((item) => <button className="ad-suggestion-row" type="button" key={item.id} onClick={() => onSelectKeyword(item)}><span className="ad-suggestion-main"><strong>{item.keyword}</strong><small>{item.suggestionReason.replace(/^MiMo 语义审核：/, '')}</small></span><span className="ad-suggestion-metric"><b>{relevanceRatio(item)}</b><small>相关性</small></span><ConfidencePill value={item.confidence} /></button>) : <div className="ad-empty"><CheckCircle2 size={17} /><span>{pending > 0 ? '完成 MiMo 二审后，符合条件的建议会显示在这里。' : '本次双重审核没有通过该动作的安全门槛，当前无可导出建议词。'}</span></div>}</div>
         </section>
       })}
     </div>

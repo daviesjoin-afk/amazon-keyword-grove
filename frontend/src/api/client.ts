@@ -63,7 +63,7 @@ function normalizeProduct(item: BackendProduct, stats?: Record<string, unknown>)
   }
 }
 
-function normalizeKeyword(item: BackendKeyword, rootCandidates: string[]): KeywordRecord {
+function normalizeKeyword(item: BackendKeyword, rootCandidates: string[], productCompetitorTotal = 0): KeywordRecord {
   const asins = (item.related_asins || []) as string[]
   const rawTraffic = (item.traffic_types || []) as string[]
   const match = strengthLabels[String(item.match_strength)] || '不相关'
@@ -74,11 +74,13 @@ function normalizeKeyword(item: BackendKeyword, rootCandidates: string[]): Keywo
   const root = [...rootCandidates]
     .sort((left, right) => right.length - left.length)
     .find((candidate) => normalizedText.includes(candidate)) || ((item.matched_terms || []) as string[])[0] || normalizedText.split(' ')[0] || '未分类'
+  const competitorCoverage = Number(item.competitor_coverage ?? item.related_product_count ?? asins.length)
+  const competitorTotal = Number(item.competitor_total ?? productCompetitorTotal)
   return {
     id: String(item.id), keyword: String(item.keyword_raw || item.keyword_normalized || ''), translation: String(item.keyword_translation || ''), match,
     relevanceScore: Number(item.relevance_score || 0), relevanceReason: ((item.classification_reason || []) as string[]).join('；') || String(item.advice_reason || ''),
     monthlySearchVolume: item.monthly_search_volume == null ? null : Number(item.monthly_search_volume), abaRank: item.aba_weekly_rank == null ? null : Number(item.aba_weekly_rank),
-    competitorCoverage: asins.length, competitorTotal: 20, trafficTypes: rawTraffic.map((value) => trafficLabels[value.toLowerCase()] || (value.includes('自然') ? '自然' : value.includes('SP') ? 'SP' : value.includes('品牌') ? '品牌' : value.includes('视频') ? '视频' : value.includes('HR') ? 'HR' : 'AC')),
+    competitorCoverage, competitorTotal, trafficTypes: rawTraffic.map((value) => trafficLabels[value.toLowerCase()] || (value.includes('自然') ? '自然' : value.includes('SP') ? 'SP' : value.includes('品牌') ? '品牌' : value.includes('视频') ? '视频' : value.includes('HR') ? 'HR' : 'AC')),
     root, category: String(item.category || '待确认'), intent: String(item.category || '待确认'),
     suggestedAction: action, suggestionReason: String(item.advice_reason || '数据不足，等待人工复核'), confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
     approvalStatus: item.manual_locked ? '已接受' : '待审批', notes: item.notes ? String(item.notes) : undefined, sourceAsins: asins,
@@ -104,7 +106,7 @@ export const api: KeywordApi = {
       if (page >= result.pages) break
       page += 1
     }
-    return { data: all.map((item) => normalizeKeyword(item, product?.roots || [])), source: 'api' }
+    return { data: all.map((item) => normalizeKeyword(item, product?.roots || [], product?.sourceCount || 0)), source: 'api' }
   },
   async getBatches(productId) {
     if (USE_MOCK) return { data: await mockApi.getBatches(), source: 'mock' }
