@@ -5,6 +5,7 @@
 ### Added
 
 - Real frontend API-client tests covering normalization, pagination, AI-key masking and HTTP failure behavior.
+- UI-level AI settings safety tests covering masked-key display, blank-key preservation, plaintext clearing after save, and required-field validation.
 - Architecture/trust-boundary documentation, contribution guidance and a pull-request quality checklist.
 
 ### Maintenance
