@@ -488,6 +488,15 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                         _upsert_source_asin(connection, product_id, asin, import_id, timestamp)
 
             _update_automatic_analysis(connection, product_id, product)
+            # A product is created in ``preparing`` state because its keyword
+            # workbook is optional at first.  Move it to active only after a
+            # valid import actually contributes keyword rows; an empty or
+            # header-only workbook must not fabricate readiness or ASIN data.
+            if counts["inserted"] + counts["updated"] > 0:
+                connection.execute(
+                    "UPDATE products SET status = 'active', updated_at = ? WHERE id = ? AND status != 'archived'",
+                    (now_iso(), product_id),
+                )
             connection.execute(
                 """UPDATE imports SET status = 'success', inserted_rows = ?, updated_rows = ?, skipped_rows = ?,
                    error_rows = ?, error_details_json = ?, completed_at = ? WHERE id = ?""",

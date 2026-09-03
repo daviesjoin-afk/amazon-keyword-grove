@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, Leaf, RefreshCw, X } from 'lucide-react'
 import { api, USE_MOCK } from './api/client'
 import type { FieldMapping, ImportBatch, KeywordRecord, Product, ProductCopyPayload, ProductPayload } from './types'
@@ -11,9 +11,19 @@ import { Sidebar, type AppView } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { Workbench } from './components/Workbench'
 
+const SELECTED_PRODUCT_STORAGE_KEY = 'keyword-grove:selected-product-id'
+
+function readStoredProductId(): string | null {
+  try {
+    return window.localStorage.getItem(SELECTED_PRODUCT_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
 export default function App() {
   const [products, setProducts] = useState<Product[]>([])
-  const [selectedProductId, setSelectedProductId] = useState<string | null>(null)
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(() => readStoredProductId())
   const [keywords, setKeywords] = useState<KeywordRecord[]>([])
   const [batches, setBatches] = useState<ImportBatch[]>([])
   const [mappings, setMappings] = useState<FieldMapping[]>([])
@@ -22,13 +32,23 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [semanticReviewing, setSemanticReviewing] = useState(false)
+  const [semanticReviewingProductId, setSemanticReviewingProductId] = useState<string | null>(null)
+  const selectedProductIdRef = useRef<string | null>(selectedProductId)
+  const productDataLoadRef = useRef(0)
   const isMock = USE_MOCK
 
   const selectedProduct = useMemo(() => products.find((product) => product.id === selectedProductId) || products[0] || null, [products, selectedProductId])
+  const semanticReviewing = semanticReviewingProductId === selectedProduct?.id
+
+  function selectProduct(productId: string | null) {
+    selectedProductIdRef.current = productId
+    setSelectedProductId(productId)
+  }
 
   const loadProductData = useCallback(async (product: Product) => {
+    const loadId = ++productDataLoadRef.current
     const [keywordResult, batchResult] = await Promise.all([api.getKeywords(product.id, product), api.getBatches(product.id)])
+    if (loadId !== productDataLoadRef.current) return
     setKeywords(keywordResult.data)
     setBatches(batchResult.data)
   }, [])
@@ -40,9 +60,11 @@ export default function App() {
         const [productResult, mappingResult] = await Promise.all([api.getProducts(), api.getFieldMappings()])
         if (!active) return
         setProducts(productResult.data)
-        setSelectedProductId(productResult.data[0]?.id || null)
+        const storedId = selectedProductIdRef.current
+        const initialProduct = productResult.data.find((product) => product.id === storedId) || productResult.data[0] || null
+        selectProduct(initialProduct?.id || null)
         setMappings(mappingResult.data)
-        if (productResult.data[0]) await loadProductData(productResult.data[0])
+        if (initialProduct) await loadProductData(initialProduct)
       } catch (error) {
         if (active) setLoadError(error instanceof Error ? error.message : '数据加载失败')
       } finally {
@@ -52,6 +74,15 @@ export default function App() {
     void load()
     return () => { active = false }
   }, [loadProductData])
+
+  useEffect(() => {
+    try {
+      if (selectedProductId) window.localStorage.setItem(SELECTED_PRODUCT_STORAGE_KEY, selectedProductId)
+      else if (!products.length) window.localStorage.removeItem(SELECTED_PRODUCT_STORAGE_KEY)
+    } catch {
+      // Private browsing or a restricted storage context should not block the app.
+    }
+  }, [products.length, selectedProductId])
 
   useEffect(() => {
     if (!toast) return
@@ -65,9 +96,10 @@ export default function App() {
   }
 
   async function openProduct(product: Product) {
-    setSelectedProductId(product.id)
+    const previousId = selectedProductIdRef.current
+    selectProduct(product.id)
     setView('workbench')
-    if (product.id !== selectedProduct?.id) {
+    if (product.id !== previousId) {
       try {
         await loadProductData(product)
       } catch {
@@ -80,7 +112,7 @@ export default function App() {
     try {
       const result = await api.createProduct(payload)
       setProducts((current) => [...current, result.data])
-      setSelectedProductId(result.data.id)
+      selectProduct(result.data.id)
       setView('workbench')
       setKeywords([])
       setBatches([])
@@ -99,16 +131,27 @@ export default function App() {
   }
 
   async function runSemanticReview() {
-    if (!selectedProduct || semanticReviewing) return
-    setSemanticReviewing(true)
+    if (!selectedProduct || semanticReviewingProductId) return
+    if (!keywords.length) {
+      setToast('当前产品还没有关键词，请先导入关键词表后再进行 MiMo 审核。')
+      return
+    }
+    const reviewProduct = selectedProduct
+    setSemanticReviewingProductId(reviewProduct.id)
     try {
-      const result = await api.semanticReview(selectedProduct.id)
-      await loadProductData(selectedProduct)
-      setToast(result.already_reviewed ? '当前产品全部关键词已经完成 MiMo 审核，本次未重复调用。' : `MiMo 已完成全部 ${result.reviewed} 条语义审核；结果均为待人工确认草稿。`)
+      const result = await api.semanticReview(reviewProduct.id)
+      if (selectedProductIdRef.current === reviewProduct.id) await loadProductData(reviewProduct)
+      if (result.already_reviewed) {
+        setToast('当前产品全部关键词已经完成 MiMo 审核，本次未重复调用。')
+      } else if (result.partial) {
+        setToast(`MiMo 并发审核完成 ${result.reviewed} 条，仍有 ${result.failed_batches?.length || 0} 批失败；点击增量审核可只重试未完成关键词。`)
+      } else {
+        setToast(`MiMo 已并发完成全部 ${result.reviewed} 条语义审核；结果均为待人工确认草稿。`)
+      }
     } catch (error) {
       setToast(error instanceof Error ? `MiMo 审核未完成：${error.message}` : 'MiMo 审核未完成，请检查全局 AI 设置。')
     } finally {
-      setSemanticReviewing(false)
+      setSemanticReviewingProductId((current) => current === reviewProduct.id ? null : current)
     }
   }
 
@@ -141,7 +184,15 @@ export default function App() {
   async function finishImport() {
     setView('workbench')
     if (selectedProduct) {
-      try { await loadProductData(selectedProduct) } catch { /* 保留导入报告 */ }
+      try {
+        const productResult = await api.getProducts()
+        setProducts(productResult.data)
+        const refreshedProduct = productResult.data.find((product) => product.id === selectedProduct.id)
+        if (refreshedProduct) await loadProductData(refreshedProduct)
+        else await loadProductData(selectedProduct)
+      } catch {
+        /* 保留导入报告 */
+      }
     }
     setToast(isMock ? '演示导入流程已完成。' : '关键词已写入本地词库并重新加载。')
   }

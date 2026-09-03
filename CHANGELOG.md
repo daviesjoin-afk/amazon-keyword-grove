@@ -13,6 +13,12 @@
 
 - 将相关性展示统一为竞品 ASIN 占比（如 `5/20`），保留独立的 0–100 语义评分，并让接口按产品实际竞品数动态计算分母。
 
+### Fixed
+
+- 新建产品在未导入关键词表时不再虚构 20 个竞品 ASIN 或显示 MiMo 审核中；导入有效关键词后自动从“准备中”转为可用状态。
+- 持久化当前选中产品并防止切换产品时旧的异步关键词请求覆盖新页面，刷新后仍停留在用户选中的产品。
+- 空词库概览不再显示 `NaN%`，MiMo 全量审核按钮会明确提示先导入关键词。
+
 ### Maintenance
 
 - Repository hygiene baseline: fixed the clone URL, hardened CI permissions and timeouts, added dependency checks, and enabled weekly Dependabot updates.

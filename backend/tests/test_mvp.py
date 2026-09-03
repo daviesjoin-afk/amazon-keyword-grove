@@ -116,6 +116,8 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
         json={"name": "Boxwood test product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath", "front door wreath"]},
     )
     assert response.status_code == 201, response.text
+    assert response.json()["status"] == "preparing"
+    assert response.json()["source_asin_count"] == 0
     product_id = response.json()["id"]
     rows = [
         ["关键词", "相关ASIN", "PPC竞价", "流量占比", "流量词类型", "月搜索量", "ABA周排名"],
@@ -129,6 +131,9 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
     assert result["inserted_rows"] == 2
     assert result["updated_rows"] == 1
     assert len(result["source_asins"]) == 2
+    refreshed_product = client.get(f"/api/products/{product_id}").json()
+    assert refreshed_product["status"] == "active"
+    assert refreshed_product["source_asin_count"] == 2
 
     listing = client.get(f"/api/products/{product_id}/keywords", params={"search": "room", "page_size": 10})
     assert listing.status_code == 200
@@ -165,6 +170,9 @@ def test_product_crud_and_soft_delete(client):
     created = client.post("/api/products", json={"name": "CRUD product", "site": "US"})
     assert created.status_code == 201
     assert created.json()["core_terms"] == []
+    assert created.json()["status"] == "preparing"
+    assert created.json()["keyword_count"] == 0
+    assert created.json()["source_asin_count"] == 0
     product_id = created.json()["id"]
     updated = client.patch(f"/api/products/{product_id}", json={"name": "CRUD renamed", "status": "active"})
     assert updated.status_code == 200
