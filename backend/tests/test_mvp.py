@@ -295,6 +295,25 @@ def test_semantic_review_audits_every_keyword_in_batches(client, monkeypatch):
     assert rerun.json()["reviewed"] == 11
     assert calls == [10, 1, 10, 1]
 
+    # Full re-review resets only automatic state. A manually locked result is
+    # retained and is not sent back to the model.
+    keyword_items = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 20}).json()["items"]
+    locked_id = keyword_items[0]["id"]
+    locked = client.patch(f"/api/products/{product_id}/keywords/{locked_id}", json={"action": "negative_exact", "locked": True})
+    assert locked.status_code == 200, locked.text
+    full = client.post(f"/api/products/{product_id}/semantic-review", json={"review_mode": "full", "batch_size": 10})
+    assert full.status_code == 200, full.text
+    assert full.json()["review_mode"] == "full"
+    assert full.json()["reviewed"] == 10
+    assert calls == [10, 1, 10, 1, 10]
+    locked_after = client.get(f"/api/products/{product_id}/keywords/{locked_id}").json()
+    assert locked_after["manual_locked"] is True
+    assert locked_after["suggested_action"] == "negative_exact"
+    incremental_after_full = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert incremental_after_full.status_code == 200
+    assert incremental_after_full.json()["reviewed"] == 0
+    assert incremental_after_full.json()["already_reviewed"] is True
+
 
 def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monkeypatch):
     configured = client.put(
@@ -374,9 +393,10 @@ def test_background_semantic_review_reports_refresh_safe_progress(client, monkey
         return {"reviews": [{"id": item["id"], "decision": "exact", "relevance_score": 90, "confidence": 0.9, "reason_zh": "进度测试"} for item in candidates]}
 
     monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
-    started = client.post(f"/api/products/{product_id}/semantic-review", json={"background": True, "batch_size": 10, "concurrency": 1})
+    started = client.post(f"/api/products/{product_id}/semantic-review", json={"background": True, "review_mode": "full", "batch_size": 10, "concurrency": 1})
     assert started.status_code == 200, started.text
     assert started.json()["status"] in {"running", "completed"}
+    assert started.json()["review_mode"] == "full"
     final_status = started.json()
     for _ in range(80):
         final_status = client.get(f"/api/products/{product_id}/semantic-review/status").json()
@@ -387,6 +407,7 @@ def test_background_semantic_review_reports_refresh_safe_progress(client, monkey
     assert final_status["reviewed"] == 11
     assert final_status["total"] == 11
     assert final_status["pending"] == 0
+    assert final_status["review_mode"] == "full"
     assert final_status["batches_total"] == 2
     assert final_status["batches_completed"] == 2
 

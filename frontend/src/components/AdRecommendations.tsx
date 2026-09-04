@@ -1,4 +1,4 @@
-import { CheckCircle2, Download, Eye, FileDown, Megaphone, RefreshCw, ShieldAlert, Target, Waves } from 'lucide-react'
+import { CheckCircle2, Download, Eye, FileDown, Megaphone, RefreshCw, RotateCcw, ShieldAlert, Target, Waves } from 'lucide-react'
 import type { SemanticReviewStatus } from '../api/client'
 import type { KeywordRecord, Product, SuggestedAction } from '../types'
 import { ConfidencePill } from './StatusPill'
@@ -8,7 +8,7 @@ interface AdRecommendationsProps {
   product: Product
   keywords: KeywordRecord[]
   onSelectKeyword: (keyword: KeywordRecord) => void
-  onSemanticReview: () => Promise<void>
+  onSemanticReview: (mode?: 'incremental' | 'full') => Promise<void>
   semanticReviewing: boolean
   reviewProgress: SemanticReviewStatus | null
 }
@@ -51,7 +51,7 @@ export function AdRecommendations({ product, keywords, onSelectKeyword, onSemant
   return <div className="ad-recommendation-page">
     <header className="ad-recommendation-head">
       <div><span className="panel-kicker">Advertising playbook / 双重审核</span><h1>广告建议</h1><p>内置规则先筛选，AI 再结合标题、五点和词根做语义复核。这里仅展示可导出的最终动作草稿。</p></div>
-      <div className="ad-recommendation-actions"><button className="button button-primary compact-button" type="button" disabled={semanticReviewing} title={pending ? '一次处理全部尚未完成 AI 二审的关键词；服务端采用受控小批量并发调用，不重复审核已完成结果' : '重新整理已审核结果中的否定词组词根，不调用模型'} onClick={() => void onSemanticReview()}><RefreshCw size={15} />{semanticReviewing ? '增量审核中…' : pending ? '增量审核' : '刷新广告建议'}</button><div className="ad-review-status"><span className={pending ? 'status-dot status-dot-pending' : 'status-dot status-dot-live'} /><strong>已审核 {reviewed.toLocaleString('en-US')} / {total.toLocaleString('en-US')}</strong><span>{semanticReviewing && productReview ? `正在处理第 ${Math.min(productReview.batches_completed + 1, productReview.batches_total)} / ${productReview.batches_total} 批（已完成 ${productReview.batches_completed} 批）` : productReview?.status === 'partial' ? `审核完成但有 ${productReview.failed_batches.length} 批失败，可继续增量重试` : productReview?.status === 'failed' ? `审核失败：${productReview.error || '请检查 AI 设置'}` : pending ? `待 AI 二审 ${pending.toLocaleString('en-US')} 条` : '双重审核完成，可刷新广告建议'}</span></div></div>
+      <div className="ad-recommendation-actions"><button className="button button-primary compact-button" type="button" disabled={semanticReviewing} title={pending ? '只处理尚未完成 AI 二审的关键词；已审核结果会保留' : '重新整理已审核结果中的否定词组词根，不调用模型'} onClick={() => void onSemanticReview('incremental')}><RefreshCw size={15} />{semanticReviewing ? `${productReview?.review_mode === 'full' ? '重新' : '增量'}审核中…` : pending ? '增量审核' : '刷新广告建议'}</button><button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || total === 0} title="重新审核所有未人工锁定的关键词，会产生新的模型调用；人工锁定结果保持不变" onClick={() => void onSemanticReview('full')}><RotateCcw size={15} />重新审核</button><div className="ad-review-status"><span className={pending ? 'status-dot status-dot-pending' : 'status-dot status-dot-live'} /><strong>已审核 {reviewed.toLocaleString('en-US')} / {total.toLocaleString('en-US')}</strong><span>{semanticReviewing && productReview ? `正在进行${productReview.review_mode === 'full' ? '重新' : '增量'}审核：第 ${Math.min(productReview.batches_completed + 1, productReview.batches_total)} / ${productReview.batches_total} 批（已完成 ${productReview.batches_completed} 批）` : productReview?.status === 'partial' ? `审核完成但有 ${productReview.failed_batches.length} 批失败，可继续增量重试` : productReview?.status === 'failed' ? `审核失败：${productReview.error || '请检查 AI 设置'}` : pending ? `待 AI 二审 ${pending.toLocaleString('en-US')} 条` : '双重审核完成，可刷新广告建议或重新审核'}</span></div></div>
     </header>
     {pending > 0 && <div className="ad-pending-banner"><Eye size={17} /><span>{semanticReviewing && productReview ? <>AI 正在审核：已完成 <strong>{productReview.batches_completed}</strong> / <strong>{productReview.batches_total}</strong> 批，已审核 <strong>{reviewed.toLocaleString('en-US')} / {total.toLocaleString('en-US')}</strong>。页面刷新后会自动恢复进度。</> : <>当前还有 <strong>{pending.toLocaleString('en-US')}</strong> 条只有内置规则预审，暂不进入四类导出清单。规则预审已标出 <strong>{pendingBroad.toLocaleString('en-US')}</strong> 条广泛候选、<strong>{pendingNegativePhrase.toLocaleString('en-US')}</strong> 条否定词组候选；点击“增量审核”可继续处理。</>}</span></div>}
     <div className="ad-recommendation-grid">
