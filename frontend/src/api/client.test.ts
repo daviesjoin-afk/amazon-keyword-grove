@@ -78,6 +78,7 @@ describe('API client', () => {
               keyword_normalized: 'boxwood wreath',
               match_strength: 'strong',
               suggested_action: 'broad',
+              negative_phrase_root: 'boxwood wreath',
               monthly_search_volume: 1000,
               related_asins: ['B0TEST0001'],
               advice_confidence: 0.9,
@@ -130,7 +131,7 @@ describe('API client', () => {
     })
 
     expect(result.data.map((item) => item.keyword)).toEqual(['boxwood wreath', 'front door wreath'])
-    expect(result.data[0]).toMatchObject({ suggestedAction: '广泛探索', confidence: 90, risk: '低' })
+    expect(result.data[0]).toMatchObject({ suggestedAction: '广泛探索', negativePhraseRoot: 'boxwood wreath', confidence: 90, risk: '低' })
     expect(result.data[1]).toMatchObject({ suggestedAction: '精准投放', confidence: 80, risk: '中' })
     expect(fetchMock.mock.calls[0][0]).toContain('/products/product%2Fwith%20space/keywords?page=1')
     expect(fetchMock.mock.calls[1][0]).toContain('/products/product%2Fwith%20space/keywords?page=2')

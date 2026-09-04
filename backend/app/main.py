@@ -23,7 +23,7 @@ from .ai_service import (
     semantic_review_signature as _semantic_review_signature,
     test_ai_connection as _test_ai_connection,
 )
-from .analyzer import MIN_COMPETITOR_COVERAGE_RATIO, MIN_TARGETING_SEARCH_VOLUME, _clear_generic_decor_mismatch, _has_product_anchor, _is_generic_decor_without_anchor, analyze_keyword, infer_core_terms, minimum_competitor_coverage
+from .analyzer import MIN_COMPETITOR_COVERAGE_RATIO, MIN_TARGETING_SEARCH_VOLUME, _clear_generic_decor_mismatch, _is_generic_decor_without_anchor, analyze_keyword, derive_negative_phrase_candidates, infer_core_terms, minimum_competitor_coverage
 from .api_support import (
     api_error as _api_error,
     get_product as _get_product,
@@ -38,7 +38,7 @@ from .api_support import (
 from .db import init_db, read_connection, transaction
 from .importer import ImportValidationError, _product_dict, _update_automatic_analysis, import_parsed_workbook, parse_workbook
 from .schemas import AIConfigUpdate, KeywordUpdate, ProductCreate, ProductUpdate, SemanticReviewRequest
-from .utils import clean_text, dumps, loads, now_iso, tokens
+from .utils import clean_text, dumps, loads, now_iso
 
 
 APP_VERSION = "0.3.2"
@@ -144,7 +144,8 @@ def _semantic_review_sync(
             total = connection.execute("SELECT COUNT(*) AS count FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchone()["count"]
         if not total:
             _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
-        return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": 0, "batches": 0, "already_reviewed": True, "items": []}
+        promoted = _promote_negative_phrase_recommendations(product_id, product)
+        return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": 0, "batches": 0, "already_reviewed": True, "negative_phrase_promoted": promoted, "items": []}
 
     all_candidates = [
         {"id": int(row["id"]), "keyword": row["keyword_raw"], "translation": row["keyword_translation"], "rule_score": row["relevance_score"], "rule_strength": row["match_strength_auto"], "rule_action": row["suggested_action_auto"], "monthly_search_volume": row["monthly_search_volume"], "source_count": max(0, int(row["related_product_count"] if row["related_product_count"] is not None else keyword_source_counts.get(int(row["id"]), len(loads(row["related_asins_json"], []))) or 0)), "source_total": competitor_total, "manual_locked": bool(row["manual_locked"])}
@@ -226,22 +227,12 @@ def _semantic_review_sync(
                     decision = "exact"
                     reason += "；广泛仅允许使用完整核心词根，已降为精准草稿"
                 if decision == "negative_phrase":
-                    root = clean_text(review.get("negative_phrase_root") or keyword_text).casefold()
-                    related = connection.execute("SELECT relevance_score FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND keyword_normalized LIKE ?", (product_id, f"%{root}%")).fetchall()
-                    # Keep the complete generic-decor example at negative
-                    # exact. `room decor` itself can be excluded, but a
-                    # phrase-level action would be too aggressive because
-                    # valid combinations such as `room ... wreath` may still
-                    # exist in the same corpus.
-                    if _clear_generic_decor_mismatch(keyword_text, analyze_keyword(keyword_text, product), product):
-                        decision = "negative_exact"
-                        reason += "；泛房间装饰只否定完整搜索词，避免把 room 相关有效组合一并拦截"
-                    # A one-word root such as `room` is too broad to negate as
-                    # a phrase. Require a multi-word root plus repeated-root /
-                    # relevance conflict checks.
-                    if decision == "negative_phrase" and (len(tokens(root)) < 2 or len(related) < 2 or any(int(item["relevance_score"] or 0) >= 50 for item in related)):
-                        decision = "negative_exact"
-                        reason += "；否定词组可能误伤相关词或词根过短，已降为否定精准草稿"
+                    # A phrase action is never persisted from an individual
+                    # model response.  The product-level pass below first
+                    # collects all negative-exact seeds, derives repeated
+                    # two-word roots, and checks every affected expansion.
+                    decision = "negative_exact"
+                    reason += "；否定词组改由全部否定精准结果完成后统一进行词根误伤审核"
                 strength = "strong" if score >= 80 else "medium" if score >= 50 else "weak" if score >= 20 else "irrelevant"
                 signature = _semantic_review_signature(product, candidate)
                 if not candidate["manual_locked"]:
@@ -260,6 +251,19 @@ def _semantic_review_sync(
         first_error = failed_batches[0]["error"]
         _api_error(502, "ai_review_failed", f"AI 语义审核失败，{len(failed_batches)} 批均未完成：{first_error}")
 
+    # Per-keyword semantic decisions are now durable.  Run the product-level
+    # negative-phrase pass only after those writes so it can compare every
+    # expansion of a repeated two-word root and avoid promoting a phrase that
+    # would suppress a useful product query.
+    promoted = _promote_negative_phrase_recommendations(product_id, product)
+    promoted_by_id = {item["id"]: item for item in promoted}
+    for item in applied:
+        promotion = promoted_by_id.get(item["id"])
+        if promotion:
+            item["decision"] = "negative_phrase"
+            item["negative_phrase_root"] = promotion["root"]
+            item["reason"] = promotion["reason"]
+
     return {
         "product_id": product_id,
         "provider": clean_text(config.get("provider")),
@@ -270,8 +274,56 @@ def _semantic_review_sync(
         "failed_batches": failed_batches,
         "partial": bool(failed_batches),
         "concurrency": worker_count,
+        "negative_phrase_promoted": promoted,
         "items": applied,
     }
+
+
+def _promote_negative_phrase_recommendations(product_id: int, product: dict[str, Any]) -> list[dict[str, Any]]:
+    """Persist safe product-level phrase-negative drafts after semantic review."""
+
+    with transaction() as connection:
+        rows = [dict(row) for row in connection.execute("SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchall()]
+        candidates = derive_negative_phrase_candidates(rows, product)
+        promoted: list[dict[str, Any]] = []
+        timestamp = now_iso()
+        for root, evidence in candidates.items():
+            representative = connection.execute(
+                "SELECT id, keyword_raw, manual_locked, manual_action, advice_reason FROM keywords WHERE id = ? AND product_id = ? AND deleted_at IS NULL",
+                (evidence["representative_id"], product_id),
+            ).fetchone()
+            if representative is None or representative["manual_locked"] or representative["manual_action"]:
+                continue
+            # A previous promotion or a manual edit may have changed the row
+            # since the snapshot used to derive candidates.
+            current = connection.execute("SELECT suggested_action_auto FROM keywords WHERE id = ?", (representative["id"],)).fetchone()
+            if current is None or current["suggested_action_auto"] != "negative_exact":
+                continue
+            reason = (
+                f"基于否定精准词根二次审核：建议否定词组“{root}”；"
+                f"已审核 {evidence['affected_count']} 个受影响词，未发现相关产品组合"
+            )
+            impact = {
+                "root": root,
+                "seed_count": evidence["seed_count"],
+                "seed_keywords": evidence["seed_keywords"],
+                "affected_count": evidence["affected_count"],
+                "affected_keywords": evidence["affected_keywords"][:50],
+                "protected_keywords": evidence["protected_keywords"],
+                "blocked": False,
+                "basis": "已审核否定精准词的双词根重复度 + 受影响词语义结果 + 产品锚点误伤检查",
+            }
+            connection.execute(
+                """UPDATE keywords SET suggested_action_auto = 'negative_phrase', suggested_match_type = 'negative_phrase',
+                   advice_reason = ?, advice_risk_level = 'high', negative_impact_json = ?, updated_at = ? WHERE id = ?""",
+                (reason, dumps(impact), timestamp, representative["id"]),
+            )
+            connection.execute(
+                "INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'negative_phrase_derived', ?, ?)",
+                (product_id, representative["id"], dumps(impact), timestamp),
+            )
+            promoted.append({"id": int(representative["id"]), "keyword": representative["keyword_raw"], "root": root, "affected_count": evidence["affected_count"], "reason": reason})
+        return promoted
 
 
 def _semantic_review_counts(product_id: int) -> tuple[int, int]:
@@ -373,7 +425,12 @@ def _start_background_semantic_review(product_id: int, payload: SemanticReviewRe
         _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
     pending = max(0, total - reviewed)
     if not pending:
-        return _semantic_review_status_snapshot(product_id)
+        with read_connection() as connection:
+            product = _product_dict(_get_product(connection, product_id))
+        promoted = _promote_negative_phrase_recommendations(product_id, product)
+        snapshot = _semantic_review_status_snapshot(product_id)
+        snapshot["negative_phrase_promoted"] = promoted
+        return snapshot
     candidate_count = min(pending, payload.limit)
     batch_total = math.ceil(candidate_count / payload.batch_size)
     already_running = False

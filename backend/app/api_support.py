@@ -113,6 +113,7 @@ def keyword_response(row: Any, connection: Any | None = None) -> dict[str, Any]:
     data["raw_data"] = loads(data.pop("raw_data_json", "{}"), {})
     data["data_quality_flags"] = loads(data.pop("data_quality_flags_json", "[]"), [])
     data["negative_impact"] = loads(data.pop("negative_impact_json", "{}"), {})
+    data["negative_phrase_root"] = data["negative_impact"].get("root") if isinstance(data["negative_impact"], dict) else None
     data["manual_locked"] = bool(data.get("manual_locked"))
     data["category"] = data.get("manual_category") or data.get("category_auto")
     data["match_strength"] = data.get("manual_match_strength") or data.get("match_strength_auto")

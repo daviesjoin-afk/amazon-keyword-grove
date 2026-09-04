@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -91,6 +92,10 @@ CORE_TITLE_MODIFIERS = {
 CORE_TITLE_BOUNDARY = re.compile(r"\b(?:for|with|from|by|in|on|at|and)\b")
 MIN_TARGETING_SEARCH_VOLUME = 300
 MIN_COMPETITOR_COVERAGE_RATIO = 0.30
+NEGATIVE_PHRASE_MIN_AFFECTED = 2
+_NEGATIVE_PHRASE_STOPWORDS = {
+    "a", "an", "and", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with",
+}
 
 
 def minimum_competitor_coverage(total: int) -> int:
@@ -509,24 +514,129 @@ def recommendation_for(
 def compute_safe_negative_phrase_terms(
     rows: list[dict[str, Any]], product: dict[str, Any]
 ) -> tuple[set[str], dict[str, list[str]]]:
-    """Find explicitly excluded roots that are safe enough to surface as high-risk drafts.
+    """Keep import-time analysis from emitting phrase negatives.
 
-    This intentionally returns no candidates unless the user supplied an
-    exclusion root, at least two keywords contain it, and no strong/medium
-    keyword contains it.  It is a conservative pre-flight check, not an ad
-    operation.
+    Phrase negatives now require the product-level post-semantic pass in
+    :func:`derive_negative_phrase_candidates`.  The importer still calls this
+    compatibility hook while calculating first-pass fields, so it must remain
+    a no-op; otherwise a local-only import could bypass the semantic guard.
     """
 
-    _, _, excluded, _ = _profile(product)
-    if not excluded:
-        return set(), {}
-    analyses = [(clean_text(row.get("keyword_normalized") or row.get("keyword_raw")), analyze_keyword(row.get("keyword_normalized") or row.get("keyword_raw"), product)) for row in rows]
-    safe: set[str] = set()
-    conflicts: dict[str, list[str]] = {}
-    for root in excluded:
-        contained = [keyword for keyword, _ in analyses if _phrase_in_text(root, keyword)]
-        meaningful = [keyword for keyword, analysis in analyses if _phrase_in_text(root, keyword) and analysis.strength in {"strong", "medium"}]
-        if len(contained) >= 2 and not meaningful:
-            safe.add(root)
-            conflicts[root] = contained
-    return safe, conflicts
+    return set(), {}
+
+
+def _two_word_phrases(keyword: str) -> list[str]:
+    """Return contiguous two-token roots suitable for a phrase-negative draft.
+
+    Amazon phrase negatives are materially broader than exact negatives.  Keep
+    the candidate generator intentionally narrow: only adjacent two-word
+    phrases are considered and connector-only fragments (``for home``) are
+    discarded.  A one-word root such as ``room`` can therefore never leak into
+    a negative phrase recommendation.
+    """
+
+    words = tokens(keyword)
+    return [
+        f"{words[index]} {words[index + 1]}"
+        for index in range(len(words) - 1)
+        if words[index] not in _NEGATIVE_PHRASE_STOPWORDS
+        and words[index + 1] not in _NEGATIVE_PHRASE_STOPWORDS
+        and not words[index].isdigit()
+        and not words[index + 1].isdigit()
+    ]
+
+
+def derive_negative_phrase_candidates(
+    rows: list[dict[str, Any]], product: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """Derive safe two-word phrase-negative drafts from reviewed exact negatives.
+
+    This is the product-level second pass that follows per-keyword AI review.
+    It uses the semantic decisions/scores already persisted for every affected
+    keyword as the semantic match signal, then applies deterministic guards:
+
+    * a root must be present in at least two reviewed negative-exact seeds;
+    * every affected keyword must have completed semantic review;
+    * a reviewed exact/broad or medium/strong expansion blocks phrase-negative
+      promotion because the phrase could suppress a useful product query;
+    * only two-token roots are emitted, never a broad one-word token.
+
+    The return value contains the canonical seed keyword to promote and the
+    evidence needed by the UI/export layer.  It never mutates the database.
+    """
+
+    normalized_rows: list[dict[str, Any]] = []
+    for raw in rows:
+        keyword = normalize_keyword(raw.get("keyword_normalized") or raw.get("keyword_raw"))
+        if not keyword:
+            continue
+        action = clean_text(raw.get("manual_action") or raw.get("suggested_action_auto")).casefold()
+        try:
+            score = int(raw.get("relevance_score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        normalized_rows.append(
+            {
+                "raw": raw,
+                "keyword": keyword,
+                "action": action,
+                "score": max(0, min(100, score)),
+                "reviewed": bool(raw.get("semantic_reviewed")),
+                "local_score": analyze_keyword(keyword, product).score,
+            }
+        )
+
+    seeds = [item for item in normalized_rows if item["action"] == "negative_exact" and item["reviewed"]]
+    if not seeds:
+        return {}
+
+    root_seed_counts = Counter(root for seed in seeds for root in _two_word_phrases(seed["keyword"]))
+    candidates: dict[str, dict[str, Any]] = {}
+    for root, seed_count in root_seed_counts.items():
+        # One isolated negative-exact row is not enough evidence for a phrase
+        # action.  Requiring repeated seeds is what distinguishes a root-level
+        # exclusion from a simple complete-query exclusion such as ``room decor``.
+        if seed_count < 2:
+            continue
+        affected = [item for item in normalized_rows if _phrase_in_text(root, item["keyword"])]
+        if len(affected) < NEGATIVE_PHRASE_MIN_AFFECTED:
+            continue
+        if any(not item["reviewed"] for item in affected):
+            continue
+
+        protected: list[str] = []
+        for item in affected:
+            # A positive semantic decision, an AI score at/above the medium
+            # threshold, or a strong local product-anchor match all mean that
+            # this expansion could be useful.  Phrase-negative promotion must
+            # stop rather than risk suppressing it.
+            if item["action"] != "negative_exact" and (
+                item["action"] in {"exact", "broad"}
+                or item["score"] >= 50
+                or (item["local_score"] >= 50 and _has_product_anchor(item["keyword"], product))
+            ):
+                protected.append(item["keyword"])
+
+        if protected:
+            continue
+
+        # Prefer the shortest negative seed; when the exact root exists in the
+        # library it becomes the clean export value, otherwise retain the
+        # shortest source keyword while storing the derived root as evidence.
+        negative_seeds = [item for item in affected if item["action"] == "negative_exact"]
+        if len(negative_seeds) < 2:
+            continue
+        representative = min(
+            negative_seeds,
+            key=lambda item: (item["keyword"] != root, len(tokens(item["keyword"])), item["keyword"]),
+        )
+        candidates[root] = {
+            "root": root,
+            "seed_count": seed_count,
+            "seed_keywords": [item["keyword"] for item in negative_seeds],
+            "affected_count": len(affected),
+            "affected_keywords": [item["keyword"] for item in affected],
+            "protected_keywords": protected,
+            "representative_id": int(representative["raw"]["id"]),
+        }
+    return candidates

@@ -14,7 +14,7 @@ from openpyxl import Workbook
 
 os.environ.setdefault("KEYWORD_DB_PATH", str(Path(tempfile.gettempdir()) / f"keyword-grove-test-{uuid.uuid4().hex}.db"))
 
-from backend.app.analyzer import analyze_keyword, infer_core_terms, recommendation_for
+from backend.app.analyzer import analyze_keyword, derive_negative_phrase_candidates, infer_core_terms, recommendation_for
 from backend.app.main import app
 import backend.app.main as main_module
 from backend.app.utils import as_currency, as_currency_range, as_percent, normalize_keyword
@@ -88,6 +88,35 @@ def test_relevance_and_safe_ad_recommendation_rules():
 
 def test_core_term_inference_prefers_product_phrase_over_single_word():
     assert infer_core_terms({"product_title": TITLE, "bullet_points": BULLETS}) == ["boxwood wreath"]
+
+
+def test_negative_phrase_roots_require_repeated_exact_seeds_and_block_valid_expansions():
+    product = {"product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]}
+    safe_rows = [
+        {"id": 11, "keyword_normalized": "cheap decor", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 5},
+        {"id": 12, "keyword_normalized": "cheap decor for home", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 5},
+    ]
+    safe = derive_negative_phrase_candidates(safe_rows, product)
+    assert "cheap decor" in safe
+    assert all(len(candidate.split()) == 2 for candidate in safe)
+    assert safe["cheap decor"]["representative_id"] == 11
+
+    # A useful expansion containing the same phrase must protect it from a
+    # phrase negative, even when the source exact negatives are repeated.
+    protected_rows = [
+        *safe_rows,
+        {"id": 13, "keyword_normalized": "cheap decor wreath", "suggested_action_auto": "exact", "semantic_reviewed": 1, "relevance_score": 90},
+    ]
+    assert derive_negative_phrase_candidates(protected_rows, product) == {}
+
+    # The broad one-word root that motivated this rule can never be emitted.
+    room_rows = [
+        {"id": 21, "keyword_normalized": "room decor", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 10},
+        {"id": 22, "keyword_normalized": "room decor for home", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 10},
+    ]
+    room_candidates = derive_negative_phrase_candidates(room_rows, product)
+    assert "room" not in room_candidates
+    assert all(len(candidate.split()) == 2 for candidate in room_candidates)
 
 
 def _workbook_bytes(rows: list[list[object]]) -> bytes:
@@ -287,6 +316,44 @@ def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monke
     assert reviewed.status_code == 200, reviewed.text
     result = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 10}).json()["items"][0]
     assert result["suggested_action"] == "observe"
+
+
+def test_semantic_review_derives_negative_phrase_after_exact_pass(client, monkeypatch):
+    configured = client.put(
+        "/api/ai-config",
+        json={"provider": "openrouter", "base_url": "https://api.example.com/v1", "model": "minimax/minimax-m3:free", "api_key": "local-test-key-negative-phrase", "enabled": True},
+    )
+    assert configured.status_code == 200
+    created = client.post("/api/products", json={"name": "Negative phrase product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
+    product_id = created.json()["id"]
+    rows = [
+        ["关键词", "相关ASIN", "月搜索量"],
+        ["cheap decor", "B0TEST0001", 1200],
+        ["cheap decor for home", "B0TEST0002", 900],
+    ]
+    imported = client.post(f"/api/products/{product_id}/imports", files={"file": ("negative-phrase.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert imported.status_code == 200, imported.text
+
+    def fake_ai(_config, request_payload):
+        candidates = json.loads(request_payload["messages"][1]["content"])["candidates"]
+        return {"reviews": [{"id": item["id"], "decision": "negative_exact", "relevance_score": 5, "confidence": 0.95, "reason_zh": "完整词组与产品不匹配"} for item in candidates]}
+
+    monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
+    reviewed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert reviewed.status_code == 200, reviewed.text
+    promoted = reviewed.json()["negative_phrase_promoted"]
+    assert promoted and promoted[0]["root"] == "cheap decor"
+    suggestions = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 10, "suggested_action": "negative_phrase"}).json()
+    assert suggestions["total"] == 1
+    assert suggestions["items"][0]["negative_impact"]["root"] == "cheap decor"
+    refreshed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["already_reviewed"] is True
+    assert refreshed.json()["negative_phrase_promoted"] == []
+    background_refresh = client.post(f"/api/products/{product_id}/semantic-review", json={"background": True})
+    assert background_refresh.status_code == 200, background_refresh.text
+    assert background_refresh.json()["status"] == "idle"
+    assert background_refresh.json()["negative_phrase_promoted"] == []
 
 
 def test_background_semantic_review_reports_refresh_safe_progress(client, monkeypatch):

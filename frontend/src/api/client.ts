@@ -18,6 +18,7 @@ export interface SemanticReviewResult {
   partial?: boolean
   concurrency?: number
   already_reviewed?: boolean
+  negative_phrase_promoted?: Array<{ id: number; keyword: string; root: string; affected_count: number; reason: string }>
   items: Array<Record<string, unknown>>
 }
 
@@ -35,6 +36,7 @@ export interface SemanticReviewStatus {
   updated_at?: string | null
   completed_at?: string | null
   error?: string | null
+  negative_phrase_promoted?: Array<{ id: number; keyword: string; root: string; affected_count: number; reason: string }>
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -117,7 +119,7 @@ function normalizeKeyword(item: BackendKeyword, rootCandidates: string[], produc
     monthlySearchVolume: item.monthly_search_volume == null ? null : Number(item.monthly_search_volume), abaRank: item.aba_weekly_rank == null ? null : Number(item.aba_weekly_rank),
     competitorCoverage, competitorTotal, trafficTypes: rawTraffic.map((value) => trafficLabels[value.toLowerCase()] || (value.includes('自然') ? '自然' : value.includes('SP') ? 'SP' : value.includes('品牌') ? '品牌' : value.includes('视频') ? '视频' : value.includes('HR') ? 'HR' : 'AC')),
     root, category: String(item.category || '待确认'), intent: String(item.category || '待确认'),
-    suggestedAction: action, suggestionReason: String(item.advice_reason || '数据不足，等待人工复核'), confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
+    suggestedAction: action, negativePhraseRoot: item.negative_phrase_root ? String(item.negative_phrase_root) : undefined, suggestionReason: String(item.advice_reason || '数据不足，等待人工复核'), confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
     approvalStatus: item.manual_locked ? '已接受' : '待审批', notes: item.notes ? String(item.notes) : undefined, sourceAsins: asins,
     ppcBid: item.ppc_bid == null ? null : Number(item.ppc_bid), titleDensity: item.title_density == null ? null : Number(item.title_density), demandSupplyRatio: item.demand_supply_ratio == null ? null : Number(item.demand_supply_ratio),
     isLocked: Boolean(item.manual_locked), semanticReviewed: Boolean(item.semantic_reviewed) || String(item.advice_reason || '').includes('语义审核：'), lastUpdated: String(item.updated_at || ''),
