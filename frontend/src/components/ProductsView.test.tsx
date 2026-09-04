@@ -58,6 +58,7 @@ describe('ProductsView product actions', () => {
 
     expect(container.querySelector('.product-card.is-current')).toBeTruthy()
     expect(container.textContent).toContain('当前产品')
+    expect(container.textContent).toContain('删除')
     expect(container.querySelector('button[aria-label="删除Boxwood wreath"]')).toBeTruthy()
   })
 
