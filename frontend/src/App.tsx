@@ -3,6 +3,7 @@ import { CheckCircle2, Leaf, RefreshCw, X } from 'lucide-react'
 import { api, USE_MOCK, type SemanticReviewStatus } from './api/client'
 import type { FieldMapping, ImportBatch, KeywordRecord, Product, ProductCopyPayload, ProductPayload } from './types'
 import { relevanceRatio } from './keywordMetrics'
+import { useI18n } from './i18n'
 import { ImportWizard } from './components/ImportWizard'
 import { AISettingsPage } from './components/AISettingsPage'
 import { KeywordDrawer } from './components/KeywordDrawer'
@@ -22,6 +23,7 @@ function readStoredProductId(): string | null {
 }
 
 export default function App() {
+  const { text, numberLocale } = useI18n()
   const [products, setProducts] = useState<Product[]>([])
   const [selectedProductId, setSelectedProductId] = useState<string | null>(() => readStoredProductId())
   const [keywords, setKeywords] = useState<KeywordRecord[]>([])
@@ -68,13 +70,15 @@ export default function App() {
         setMappings(mappingResult.data)
         if (initialProduct) await loadProductData(initialProduct)
       } catch (error) {
-        if (active) setLoadError(error instanceof Error ? error.message : '数据加载失败')
+        if (active) setLoadError(error instanceof Error ? error.message : text('数据加载失败', 'Failed to load data'))
       } finally {
         if (active) setLoading(false)
       }
     }
     void load()
     return () => { active = false }
+    // Initial data loading should not repeat when only the display language changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadProductData])
 
   useEffect(() => {
@@ -137,7 +141,7 @@ export default function App() {
       try {
         await loadProductData(product)
       } catch {
-        setToast('关键词数据暂时无法加载，已保留当前页面。')
+        setToast(text('关键词数据暂时无法加载，已保留当前页面。', 'Keyword data could not be loaded. The current page has been preserved.'))
       }
     }
   }
@@ -150,9 +154,9 @@ export default function App() {
       setView('workbench')
       setKeywords([])
       setBatches([])
-      setToast('产品空间已创建，可以开始导入关键词表。')
+      setToast(text('产品空间已创建，可以开始导入关键词表。', 'Product workspace created. You can now import a keyword sheet.'))
     } catch {
-      setToast('产品创建失败，请检查本地 API。')
+      setToast(text('产品创建失败，请检查本地 API。', 'Failed to create product. Please check the local API.'))
     }
   }
 
@@ -161,13 +165,13 @@ export default function App() {
     const result = await api.updateProduct(selectedProduct.id, payload)
     setProducts((current) => current.map((item) => item.id === result.data.id ? result.data : item))
     await loadProductData(result.data)
-    setToast('自定义名字和产品资料已保存。')
+    setToast(text('自定义名字和产品资料已保存。', 'Custom name and product details saved.'))
   }
 
   async function runSemanticReview(reviewMode: 'incremental' | 'full' = 'incremental') {
     if (!selectedProduct || semanticReviewing) return
     if (!keywords.length) {
-      setToast('当前产品还没有关键词，请先导入关键词表后再进行 AI 审核。')
+      setToast(text('当前产品还没有关键词，请先导入关键词表后再进行 AI 审核。', 'This product has no keywords yet. Import a keyword sheet before running AI review.'))
       return
     }
     if (reviewMode === 'full' && !window.confirm('重新审核会重新处理所有未人工锁定的关键词，并产生新的模型调用。确定继续吗？')) return
@@ -180,7 +184,7 @@ export default function App() {
         setReviewPollNonce((current) => current + 1)
       }
       if (status.status === 'completed' && status.pending === 0) setToast(reviewMode === 'full' ? '当前产品已完成重新审核，人工锁定记录未改变。' : '当前产品全部关键词已经完成 AI 审核。')
-      else if (status.status === 'running') setToast(`已开始${reviewMode === 'full' ? '重新' : '增量'}审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
+      else if (status.status === 'running') setToast(`已开始${reviewMode === 'full' ? '重新' : '增量'}审核，当前进度 ${status.reviewed.toLocaleString(numberLocale)} / ${status.total.toLocaleString(numberLocale)}；刷新后会继续显示进度。`)
       else setToast('AI 审核状态已更新，请查看广告建议页的进度。')
     } catch (error) {
       setToast(error instanceof Error ? `AI 审核未完成：${error.message}` : 'AI 审核未完成，请检查全局 AI 设置。')
@@ -207,6 +211,27 @@ export default function App() {
     }
   }
 
+  async function saveKeyword(patch: Partial<KeywordRecord>) {
+    if (!drawerKeyword) return
+    if (!selectedProduct || USE_MOCK) {
+      await updateKeywords([drawerKeyword.id], patch)
+      return
+    }
+    const actionMap: Record<string, string> = { '精准投放': 'exact', '广泛探索': 'broad', '否定精准': 'negative_exact', '否定词组': 'negative_phrase', '观察': 'observe', '人工复核': 'manual_review' }
+    const payload: { action?: string | null; locked?: boolean; notes?: string } = {}
+    if (patch.suggestedAction) payload.action = patch.approvalStatus === '已驳回' ? null : actionMap[patch.suggestedAction]
+    if (patch.approvalStatus) payload.locked = patch.approvalStatus !== '已驳回'
+    if (patch.notes !== undefined) payload.notes = patch.notes
+    try {
+      const updated = await api.updateKeyword(selectedProduct.id, drawerKeyword.id, payload)
+      setKeywords((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setDrawerKeyword(updated)
+      setToast('关键词人工判断已保存，刷新后仍会保留。')
+    } catch (error) {
+      setToast(error instanceof Error ? `关键词保存失败：${error.message}` : '关键词保存失败，请检查本地 API。')
+    }
+  }
+
   async function deleteProduct(product: Product) {
     if (!window.confirm(`确定删除产品“${product.name}”吗？产品会被归档，关键词和导入记录仍保留，可由后端恢复。`)) return
     try {
@@ -228,29 +253,19 @@ export default function App() {
     }
   }
 
-  async function saveKeyword(patch: Partial<KeywordRecord>) {
-    if (!drawerKeyword) return
-    if (!selectedProduct || USE_MOCK) {
-      updateKeywords([drawerKeyword.id], patch)
-      return
-    }
-    const actionMap: Record<string, string> = { '精准投放': 'exact', '广泛探索': 'broad', '否定精准': 'negative_exact', '否定词组': 'negative_phrase', '观察': 'observe', '人工复核': 'manual_review' }
-    const payload: { action?: string | null; locked?: boolean; notes?: string } = {}
-    if (patch.suggestedAction) payload.action = patch.approvalStatus === '已驳回' ? null : actionMap[patch.suggestedAction]
-    if (patch.approvalStatus) payload.locked = patch.approvalStatus !== '已驳回'
-    if (patch.notes !== undefined) payload.notes = patch.notes
-    try {
-      const updated = await api.updateKeyword(selectedProduct.id, drawerKeyword.id, payload)
-      setKeywords((current) => current.map((item) => item.id === updated.id ? updated : item))
-      setDrawerKeyword(updated)
-      setToast('关键词人工判断已保存，刷新后仍会保留。')
-    } catch (error) {
-      setToast(error instanceof Error ? `关键词保存失败：${error.message}` : '关键词保存失败，请检查本地 API。')
-    }
-  }
-
   function exportKeywords() {
-    const headers = ['关键词', '翻译', '相关性（竞品占比）', '语义评分', '搜索量', '流量类型', '建议动作', '置信度', '风险', '审批状态']
+    const headers = [
+      text('关键词', 'Keyword'),
+      text('翻译', 'Translation'),
+      text('相关性（竞品占比）', 'Relevance (competitor share)'),
+      text('语义评分', 'Semantic score'),
+      text('搜索量', 'Search volume'),
+      text('流量类型', 'Traffic type'),
+      text('建议动作', 'Suggested action'),
+      text('置信度', 'Confidence'),
+      text('风险', 'Risk'),
+      text('审批状态', 'Approval status'),
+    ]
     const rows = [...keywords].sort((left, right) => (right.monthlySearchVolume ?? -1) - (left.monthlySearchVolume ?? -1)).map((item) => [item.keyword, item.translation, relevanceRatio(item), item.relevanceScore, item.monthlySearchVolume ?? '', item.trafficTypes.join('/'), item.suggestedAction, item.confidence, item.risk, item.approvalStatus])
     const csv = [headers, ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n')
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })
@@ -260,7 +275,7 @@ export default function App() {
     link.download = `${selectedProduct?.name || 'keyword-grove'}-keyword-export.csv`
     link.click()
     URL.revokeObjectURL(url)
-    setToast('已导出当前关键词库为 CSV，未执行任何 Amazon 操作。')
+    setToast(text('已导出当前关键词库为 CSV，未执行任何 Amazon 操作。', 'Keyword library exported to CSV. No Amazon action was executed.'))
   }
 
   async function finishImport() {
@@ -273,17 +288,19 @@ export default function App() {
         if (refreshedProduct) await loadProductData(refreshedProduct)
         else await loadProductData(selectedProduct)
       } catch {
-        /* 保留导入报告 */
+        /* Keep the import report visible if refresh fails. */
       }
     }
-    setToast(isMock ? '演示导入流程已完成。' : '关键词已写入本地词库并重新加载。')
+    setToast(isMock
+      ? text('演示导入流程已完成。', 'Demo import flow completed.')
+      : text('关键词已写入本地词库并重新加载。', 'Keywords were written to the local library and reloaded.'))
   }
 
-  if (loading) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>正在打开关键词空间</strong><span>加载本地演示数据…</span></div>
-  if (!selectedProduct) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>还没有产品</strong><span>进入产品中心创建第一个关键词空间。</span><button className="button button-primary" type="button" onClick={() => setView('products')}>打开产品中心</button></div>
+  if (loading) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>{text('正在打开关键词空间', 'Opening keyword workspace')}</strong><span>{text('加载本地演示数据…', 'Loading local data…')}</span></div>
+  if (!selectedProduct) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>{text('还没有产品', 'No products yet')}</strong><span>{text('进入产品中心创建第一个关键词空间。', 'Create your first keyword workspace in Products.')}</span><button className="button button-primary" type="button" onClick={() => setView('products')}>{text('打开产品中心', 'Open Products')}</button></div>
 
   const workbench = <Workbench product={selectedProduct} keywords={keywords} batches={batches} onOpenImport={() => navigate('import')} onSelectKeyword={setDrawerKeyword} onUpdateKeywords={updateKeywords} onSaveProduct={updateProductCopy} onExport={exportKeywords} onSemanticReview={runSemanticReview} semanticReviewing={semanticReviewing} reviewProgress={reviewProgress} />
   const content = view === 'products' ? <ProductsView products={products} selectedProductId={selectedProduct?.id} onOpen={openProduct} onDelete={deleteProduct} onImport={() => navigate('import')} onCreate={createProduct} /> : view === 'import' ? <ImportWizard product={selectedProduct} mappings={mappings} onImport={(file) => api.importFile(selectedProduct.id, file)} onFinish={finishImport} /> : view === 'ai' ? <AISettingsPage /> : workbench
 
-  return <div className="app-shell"><Sidebar view={view} product={selectedProduct} onNavigate={navigate} /><div className="app-main"><Topbar view={view} product={selectedProduct} isMock={isMock} onNavigate={navigate} /><main id="main-content" tabIndex={-1}>{loadError && <div className="global-alert"><RefreshCw size={15} /><span>{loadError}</span><button type="button" onClick={() => setLoadError('')} aria-label="关闭错误提示"><X size={15} /></button></div>}{content}</main></div>{drawerKeyword && <KeywordDrawer keyword={drawerKeyword} onClose={() => setDrawerKeyword(null)} onSave={saveKeyword} />}{toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={16} /><span>{toast}</span><button type="button" aria-label="关闭提示" onClick={() => setToast('')}><X size={14} /></button></div>}</div>
+  return <div className="app-shell"><Sidebar view={view} product={selectedProduct} onNavigate={navigate} /><div className="app-main"><Topbar view={view} product={selectedProduct} isMock={isMock} onNavigate={navigate} /><main id="main-content" tabIndex={-1}>{loadError && <div className="global-alert"><RefreshCw size={15} /><span>{loadError}</span><button type="button" onClick={() => setLoadError('')} aria-label={text('关闭错误提示', 'Dismiss error')}><X size={15} /></button></div>}{content}</main></div>{drawerKeyword && <KeywordDrawer keyword={drawerKeyword} onClose={() => setDrawerKeyword(null)} onSave={saveKeyword} />}{toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={16} /><span>{toast}</span><button type="button" aria-label={text('关闭提示', 'Dismiss notification')} onClick={() => setToast('')}><X size={14} /></button></div>}</div>
 }

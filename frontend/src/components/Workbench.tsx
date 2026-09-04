@@ -2,6 +2,7 @@ import { BrainCircuit, Download, FileClock, LayoutDashboard, Library, Megaphone,
 import { useState } from 'react'
 import type { SemanticReviewStatus } from '../api/client'
 import type { ImportBatch, KeywordRecord, Product, ProductCopyPayload } from '../types'
+import { useI18n } from '../i18n'
 import { ImportHistory } from './ImportHistory'
 import { KeywordLibrary } from './KeywordLibrary'
 import { OverviewPanel } from './OverviewPanel'
@@ -26,23 +27,48 @@ interface WorkbenchProps {
 }
 
 export function Workbench({ product, keywords, batches, onOpenImport, onSelectKeyword, onUpdateKeywords, onSaveProduct, onExport, onSemanticReview, semanticReviewing, reviewProgress }: WorkbenchProps) {
+  const { text, numberLocale } = useI18n()
   const [tab, setTab] = useState<WorkbenchTab>('overview')
   const hasKeywords = product.keywordTotal > 0 || keywords.length > 0
   const reviewButtonLabel = semanticReviewing && reviewProgress
-    ? `${reviewProgress.review_mode === 'full' ? 'AI 重新审核中' : 'AI 增量审核中'} ${reviewProgress.reviewed.toLocaleString('en-US')} / ${reviewProgress.total.toLocaleString('en-US')}`
-    : hasKeywords ? 'AI 增量审核' : '暂无关键词'
+    ? text(
+        `${reviewProgress.review_mode === 'full' ? 'AI 重新审核中' : 'AI 增量审核中'} ${reviewProgress.reviewed.toLocaleString(numberLocale)} / ${reviewProgress.total.toLocaleString(numberLocale)}`,
+        `${reviewProgress.review_mode === 'full' ? 'AI re-reviewing' : 'AI reviewing'} ${reviewProgress.reviewed.toLocaleString(numberLocale)} / ${reviewProgress.total.toLocaleString(numberLocale)}`,
+      )
+    : hasKeywords ? text('AI 增量审核', 'Run AI review') : text('暂无关键词', 'No keywords')
   const reviewButtonTitle = hasKeywords
-    ? '只处理尚未完成语义审核的关键词；已审核结果会保留，人工锁定结果不会被覆盖'
-    : '请先导入关键词表，再进行 AI 语义审核'
+    ? text(
+        '只处理尚未完成语义审核的关键词；已审核结果会保留，人工锁定结果不会被覆盖',
+        'Review only keywords without a completed semantic result. Completed results and manual locks are preserved.',
+      )
+    : text('请先导入关键词表，再进行 AI 语义审核', 'Import a keyword sheet before running AI semantic review')
+
   return <div className="workbench-page">
-    <div className="workbench-head"><div className="workbench-product"><div className="product-symbol"><TreePine size={21} /></div><div><div className="workbench-kicker"><span className="status-dot status-dot-live" />产品工作台 <span className="slash">/</span> {product.site}</div><h1>{product.name}</h1><div className="workbench-submeta"><span>竞品参考 <code>{product.referenceAsin}</code></span><span>·</span><span>{product.category}</span><span className="reference-badge">竞品样本</span></div></div></div><div className="workbench-actions"><button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={reviewButtonTitle} onClick={() => void onSemanticReview('incremental')}><BrainCircuit size={15} />{reviewButtonLabel}</button><button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title="重新审核所有未人工锁定的关键词，会产生新的模型调用；人工锁定结果保持不变" onClick={() => void onSemanticReview('full')}><BrainCircuit size={15} />重新审核</button><button className="button button-secondary compact-button" type="button" onClick={onExport}><Download size={15} />导出</button><button className="button button-primary compact-button" type="button" onClick={onOpenImport}><Upload size={15} />导入新批次</button></div></div>
-    <nav className="workbench-tabs" aria-label="产品工作台分页">
-      <TabButton active={tab === 'overview'} onClick={() => setTab('overview')} icon={<LayoutDashboard size={15} />}>概览</TabButton>
-      <TabButton active={tab === 'keywords'} onClick={() => setTab('keywords')} icon={<Library size={15} />}>关键词库 <span>{product.keywordTotal.toLocaleString('en-US')}</span></TabButton>
-      <TabButton active={tab === 'roots'} onClick={() => setTab('roots')} icon={<Split size={15} />}>词根分析</TabButton>
-      <TabButton active={tab === 'ads'} onClick={() => setTab('ads')} icon={<Megaphone size={15} />}>广告建议</TabButton>
-      <TabButton active={tab === 'imports'} onClick={() => setTab('imports')} icon={<FileClock size={15} />}>导入记录 <span>{batches.length}</span></TabButton>
-      <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings2 size={15} />}>产品资料</TabButton>
+    <div className="workbench-head">
+      <div className="workbench-product">
+        <div className="product-symbol"><TreePine size={21} /></div>
+        <div>
+          <div className="workbench-kicker"><span className="status-dot status-dot-live" />{text('产品工作台', 'Product workbench')} <span className="slash">/</span> {product.site}</div>
+          <h1>{product.name}</h1>
+          <div className="workbench-submeta">
+            <span>{text('竞品参考', 'Competitor reference')} <code>{product.referenceAsin}</code></span><span>·</span><span>{product.category}</span><span className="reference-badge">{text('竞品样本', 'Competitor sample')}</span>
+          </div>
+        </div>
+      </div>
+      <div className="workbench-actions">
+        <button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={reviewButtonTitle} onClick={() => void onSemanticReview('incremental')}><BrainCircuit size={15} />{reviewButtonLabel}</button>
+        <button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={text('重新审核所有未人工锁定的关键词，会产生新的模型调用；人工锁定结果保持不变', 'Re-review all keywords except manual locks; this creates new model calls while preserving manual decisions')} onClick={() => void onSemanticReview('full')}><BrainCircuit size={15} />{text('重新审核', 'Re-review')}</button>
+        <button className="button button-secondary compact-button" type="button" onClick={onExport}><Download size={15} />{text('导出', 'Export')}</button>
+        <button className="button button-primary compact-button" type="button" onClick={onOpenImport}><Upload size={15} />{text('导入新批次', 'Import batch')}</button>
+      </div>
+    </div>
+    <nav className="workbench-tabs" aria-label={text('产品工作台分页', 'Product workbench tabs')}>
+      <TabButton active={tab === 'overview'} onClick={() => setTab('overview')} icon={<LayoutDashboard size={15} />}>{text('概览', 'Overview')}</TabButton>
+      <TabButton active={tab === 'keywords'} onClick={() => setTab('keywords')} icon={<Library size={15} />}>{text('关键词库', 'Keyword Library')} <span>{product.keywordTotal.toLocaleString(numberLocale)}</span></TabButton>
+      <TabButton active={tab === 'roots'} onClick={() => setTab('roots')} icon={<Split size={15} />}>{text('词根分析', 'Root Analysis')}</TabButton>
+      <TabButton active={tab === 'ads'} onClick={() => setTab('ads')} icon={<Megaphone size={15} />}>{text('广告建议', 'Ad Suggestions')}</TabButton>
+      <TabButton active={tab === 'imports'} onClick={() => setTab('imports')} icon={<FileClock size={15} />}>{text('导入记录', 'Import History')} <span>{batches.length}</span></TabButton>
+      <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings2 size={15} />}>{text('产品资料', 'Product Details')}</TabButton>
     </nav>
     {tab === 'overview' && <OverviewPanel product={product} keywords={keywords} batches={batches} onOpenKeywords={() => setTab('keywords')} onOpenImport={onOpenImport} onSelectKeyword={onSelectKeyword} />}
     {tab === 'keywords' && <KeywordLibrary product={product} keywords={keywords} onSelectKeyword={onSelectKeyword} onUpdateKeywords={onUpdateKeywords} onExport={onExport} />}

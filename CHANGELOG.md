@@ -2,23 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- English-first GitHub landing page for external/OpenAI review, with a complete Simplified Chinese README preserved at `README.zh-CN.md`.
+- English architecture and trust-boundary documentation at `docs/ARCHITECTURE.en.md`.
+- Lightweight English / Simplified Chinese UI language state with local preference persistence and document-language updates.
+- Bilingual coverage for the application shell, product registry, import wizard, AI settings, workbench navigation, advertising recommendations, and shared keyword status labels.
+- Frontend regression tests for the stable Chinese default, English switching, persistence, and restored language preference.
+
 ### Changed
 
-- 广告建议规则进入 v2 本地实现：审核队列按月搜索量、竞品覆盖率、规则/语义分数和关键词 ID 稳定排序。
-- 精准/广泛投放继续受月搜索量 300 与竞品覆盖率 30% 双硬门槛约束；没有真实竞品 ASIN 时不再虚构 `20` 的相关性分母。
-- 广泛词根按产品级候选统一排名，最多保留 10 条可导出建议，超出项保留为“超出广泛词条上限”的观察候选。
-- 否定词组改为完成否定精准审核后的产品级二次审核：支持安全的单词根和双词根，保护 `room`、`home`、`decor`、产品核心词等高误伤词根，并保存受影响关键词证据。
-- 新增规则版本、动作来源、词根来源、冲突动作和否定词组证据字段；人工锁定结果不参与自动重算。
-- 广告建议页将动作冲突从四类导出清单中隔离，导出文件补充竞品覆盖、规则版本和最终动作来源。
-- 增加显式“重新审核”流程：仅重置未人工锁定关键词；日常“增量审核”继续跳过已完成且证据未变化的记录。
-- 重复导入保持已完成语义结果；指标变化只使受影响关键词失效，竞品 ASIN 集合变化则使全部未锁定关键词重新进入队列。
-- 关键词详情与批量审批改为写入后端数据库；驳回建议时清除临时人工动作，避免刷新后继续遮蔽自动审核结果。
-- 广泛词根超出 10 条上限时继续保留候选排名，广告建议页会单独显示超限数量，不混入可下载清单。
+- Reviewer-facing repository documentation now presents project purpose, safety boundaries, verification evidence, architecture, and a suggested code-review path in English before deeper business details.
+- Advertising recommendations now use the v2 rule engine: monthly search volume is the primary queue order, competitor coverage is the relevance denominator, broad output is limited to product roots, and negative-phrase candidates are derived from protected multi-word roots.
+- Full and incremental semantic review now preserve completed/manual decisions, expose resumable batch progress, and keep failed work retryable without duplicating completed calls.
 
 ### Fixed
 
-- 产品中心三个点改为独立操作菜单，支持打开产品和归档删除，不再触发整张卡片跳转。
-- 当前产品卡片增加绿色边框和 `aria-current` 标识，删除当前产品后自动切换并持久化新的选中产品。
+- Low-relevance, low-coverage, low-volume, and overly broad queries are excluded from exact targeting and downgraded to review instead of becoming spend-ready recommendations.
+- Product-center cards now expose an independent actions menu with open/archive-delete operations; the current product is visually marked and remains selected after refresh or deletion.
+- Manual keyword actions and review evidence remain persisted across refreshes and re-imports, while CSV exports include rule, root, evidence, and final-action metadata.
 
 ## [0.3.2] - 2026-09-03
 
