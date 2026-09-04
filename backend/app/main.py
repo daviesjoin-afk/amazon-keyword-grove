@@ -425,7 +425,12 @@ def _start_background_semantic_review(product_id: int, payload: SemanticReviewRe
         _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
     pending = max(0, total - reviewed)
     if not pending:
-        return _semantic_review_status_snapshot(product_id)
+        with read_connection() as connection:
+            product = _product_dict(_get_product(connection, product_id))
+        promoted = _promote_negative_phrase_recommendations(product_id, product)
+        snapshot = _semantic_review_status_snapshot(product_id)
+        snapshot["negative_phrase_promoted"] = promoted
+        return snapshot
     candidate_count = min(pending, payload.limit)
     batch_total = math.ceil(candidate_count / payload.batch_size)
     already_running = False

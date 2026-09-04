@@ -177,6 +177,7 @@ export default function App() {
       if (selectedProductIdRef.current === reviewProduct.id) {
         setReviewProgress(status)
         setReviewPollNonce((current) => current + 1)
+        if (status.status !== 'running') await loadProductData(reviewProduct)
       }
       if (status.status === 'completed' && status.pending === 0) setToast('当前产品全部关键词已经完成 AI 语义审核。')
       else if (status.status === 'running') setToast(`已开始 AI 增量审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)

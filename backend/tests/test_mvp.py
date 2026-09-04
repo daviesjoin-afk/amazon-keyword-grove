@@ -350,6 +350,10 @@ def test_semantic_review_derives_negative_phrase_after_exact_pass(client, monkey
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["already_reviewed"] is True
     assert refreshed.json()["negative_phrase_promoted"] == []
+    background_refresh = client.post(f"/api/products/{product_id}/semantic-review", json={"background": True})
+    assert background_refresh.status_code == 200, background_refresh.text
+    assert background_refresh.json()["status"] == "idle"
+    assert background_refresh.json()["negative_phrase_promoted"] == []
 
 
 def test_background_semantic_review_reports_refresh_safe_progress(client, monkeypatch):

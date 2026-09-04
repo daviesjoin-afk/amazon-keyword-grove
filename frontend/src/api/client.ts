@@ -36,6 +36,7 @@ export interface SemanticReviewStatus {
   updated_at?: string | null
   completed_at?: string | null
   error?: string | null
+  negative_phrase_promoted?: Array<{ id: number; keyword: string; root: string; affected_count: number; reason: string }>
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
