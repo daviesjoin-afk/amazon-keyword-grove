@@ -14,7 +14,7 @@ from openpyxl import Workbook
 
 os.environ.setdefault("KEYWORD_DB_PATH", str(Path(tempfile.gettempdir()) / f"keyword-grove-test-{uuid.uuid4().hex}.db"))
 
-from backend.app.analyzer import analyze_keyword, infer_core_terms, recommendation_for
+from backend.app.analyzer import analyze_keyword, derive_negative_phrase_candidates, infer_core_terms, rank_broad_root_candidates, recommendation_for
 from backend.app.main import app
 import backend.app.main as main_module
 from backend.app.utils import as_currency, as_currency_range, as_percent, normalize_keyword
@@ -43,17 +43,17 @@ def test_relevance_and_safe_ad_recommendation_rules():
     strong = analyze_keyword("artificial boxwood wreath for front door", product)
     assert strong.score >= 80
     assert strong.strength == "strong"
-    advice = recommendation_for("artificial boxwood wreath for front door", strong, {"monthly_search_volume": 1000, "aba_weekly_rank": 10, "ppc_bid": 0.5}, product)
+    advice = recommendation_for("artificial boxwood wreath for front door", strong, {"monthly_search_volume": 1000, "related_product_count": 20, "competitor_total": 20, "aba_weekly_rank": 10, "ppc_bid": 0.5}, product)
     assert advice["action"] == "exact"
     assert advice["approval_required"] is True
 
     # Only the complete, high-volume product root enters the broad discovery
     # pool; a long-tail query containing the same root remains exact.
     root = analyze_keyword("boxwood wreath", product)
-    root_advice = recommendation_for("boxwood wreath", root, {"monthly_search_volume": 1000}, product)
+    root_advice = recommendation_for("boxwood wreath", root, {"monthly_search_volume": 1000, "related_product_count": 20, "competitor_total": 20}, product)
     assert root_advice["action"] == "broad"
     long_tail = analyze_keyword("boxwood wreath for front door", product)
-    long_tail_advice = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000}, product)
+    long_tail_advice = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000, "related_product_count": 20, "competitor_total": 20}, product)
     assert long_tail_advice["action"] == "exact"
     low_coverage_core = recommendation_for("boxwood wreath for front door", long_tail, {"monthly_search_volume": 1000, "related_product_count": 5, "competitor_total": 20}, product)
     assert low_coverage_core["action"] == "observe"
@@ -65,7 +65,7 @@ def test_relevance_and_safe_ad_recommendation_rules():
     assert conflict_advice["action"] != "negative_phrase"
 
     medium = analyze_keyword("front door greenery decor", product)
-    medium_advice = recommendation_for("front door greenery decor", medium, {}, product)
+    medium_advice = recommendation_for("front door greenery decor", medium, {"monthly_search_volume": 1000, "related_product_count": 20, "competitor_total": 20}, product)
     if medium.strength == "medium":
         assert medium_advice["action"] == "exact"
         assert "广泛只使用产品级抓词根池" in medium_advice["reason"]
@@ -90,7 +90,42 @@ def test_core_term_inference_prefers_product_phrase_over_single_word():
     assert infer_core_terms({"product_title": TITLE, "bullet_points": BULLETS}) == ["boxwood wreath"]
 
 
-def _workbook_bytes(rows: list[list[object]]) -> bytes:
+def test_broad_root_candidates_are_ranked_by_volume_and_capped_at_ten():
+    product = {"product_title": TITLE, "bullet_points": BULLETS, "core_terms": [f"root {index}" for index in range(12)]}
+    rows = [
+        {"id": index, "keyword_normalized": f"root {index}", "suggested_action_auto": "broad", "monthly_search_volume": 1000 - index, "related_product_count": 20, "competitor_total": 20, "relevance_score": 80}
+        for index in range(12)
+    ]
+    ranked = rank_broad_root_candidates(rows, product)
+    assert len(ranked) == 12
+    assert [item["keyword"] for item in ranked[:10]] == [f"root {index}" for index in range(10)]
+    assert all(item["over_limit"] is False for item in ranked[:10])
+    assert all(item["over_limit"] is True for item in ranked[10:])
+
+
+def test_negative_phrase_candidates_allow_safe_single_root_but_protect_generic_root():
+    product = {"product_title": "Water Valve", "bullet_points": ["For tank service"], "core_terms": ["water valve"]}
+    rows = [
+        {"id": 1, "keyword_normalized": "rod replacement", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 5},
+        {"id": 2, "keyword_normalized": "rod kit", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 5},
+        {"id": 3, "keyword_normalized": "room decor", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 5},
+        {"id": 4, "keyword_normalized": "room decorations", "suggested_action_auto": "negative_exact", "semantic_reviewed": 1, "relevance_score": 5},
+    ]
+    candidates = derive_negative_phrase_candidates(rows, product)
+    assert "rod" in candidates
+    assert candidates["rod"]["root_length"] == 1
+    assert "room" not in candidates
+
+
+def test_targeting_requires_real_competitor_denominator_instead_of_fabricating_twenty():
+    product = {"product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]}
+    analysis = analyze_keyword("boxwood wreath", product)
+    advice = recommendation_for("boxwood wreath", analysis, {"monthly_search_volume": 500}, product)
+    assert advice["action"] == "observe"
+    assert "覆盖数据尚未导入" in advice["reason"]
+
+
+def _workbook_bytes(rows: list[list[object]], asins: list[str] | None = None) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Keywords"
@@ -98,8 +133,8 @@ def _workbook_bytes(rows: list[list[object]]) -> bytes:
         sheet.append(row)
     asin_sheet = workbook.create_sheet("Asin")
     asin_sheet.append(["ASIN"])
-    asin_sheet.append(["B0TEST0001"])
-    asin_sheet.append(["B0TEST0002"])
+    for asin in asins or ["B0TEST0001", "B0TEST0002"]:
+        asin_sheet.append([asin])
     output = io.BytesIO()
     workbook.save(output)
     return output.getvalue()
@@ -144,6 +179,9 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
     assert keyword["ppc_bid"] is not None
     assert keyword["competitor_coverage"] == 2
     assert keyword["competitor_total"] == 2
+    assert keyword["rule_engine_version"] == "ad-rules-v2"
+    assert keyword["root_candidate_type"] in {"core", "long_tail", "attribute_or_scene", "fitment_or_part"}
+    assert keyword["has_action_conflict"] is False
     # The second row's anomaly was followed by a valid update; inspect history
     # to prove it was retained as raw data and never interpreted as a bid.
     detail = client.get(f"/api/products/{product_id}/keywords/{keyword['id']}")
@@ -155,11 +193,19 @@ def test_api_create_import_filter_detail_and_manual_lock(client):
     assert locked.status_code == 200
     assert locked.json()["manual_locked"] is True
     assert locked.json()["suggested_action"] == "exact"
+    assert locked.json()["has_action_conflict"] is True
+    assert set(locked.json()["conflict_actions"]) == {"exact", "negative_exact"}
     reimported = client.post(f"/api/products/{product_id}/imports", files={"file": ("sample.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
     assert reimported.status_code == 200
     after_reimport = client.get(f"/api/products/{product_id}/keywords/{keyword['id']}").json()
     assert after_reimport["manual_locked"] is True
     assert after_reimport["suggested_action"] == "exact"
+    cleared = client.patch(f"/api/products/{product_id}/keywords/{keyword['id']}", json={"action": None, "locked": False})
+    assert cleared.status_code == 200
+    assert cleared.json()["manual_locked"] is False
+    assert cleared.json()["manual_action"] is None
+    assert cleared.json()["suggested_action"] == "negative_exact"
+    assert cleared.json()["has_action_conflict"] is False
     exported = client.get(f"/api/products/{product_id}/keywords/export", params={"format": "csv"})
     assert exported.status_code == 200
     assert "关键词" in exported.content.decode("utf-8-sig")
@@ -259,12 +305,42 @@ def test_semantic_review_audits_every_keyword_in_batches(client, monkeypatch):
     assert skipped.json()["reviewed"] == 0
     assert skipped.json()["already_reviewed"] is True
     assert calls == [10, 1]
+    # Re-importing the identical workbook must keep durable semantic results
+    # and avoid spending another model request.
+    identical_reimport = client.post(f"/api/products/{product_id}/imports", files={"file": ("batch.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert identical_reimport.status_code == 200, identical_reimport.text
+    skipped_after_reimport = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert skipped_after_reimport.status_code == 200
+    assert skipped_after_reimport.json()["reviewed"] == 0
+    assert calls == [10, 1]
+    # A changed Seller Sprite metric invalidates only the affected row so the
+    # next incremental pass reviews it again.
+    changed_rows = [["关键词", "相关ASIN", "月搜索量"]] + [[f"boxwood wreath {index}", "B0TEST0001", 100 + index + (100 if index == 0 else 0)] for index in range(11)]
+    changed_reimport = client.post(f"/api/products/{product_id}/imports", files={"file": ("batch-changed.xlsx", _workbook_bytes(changed_rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert changed_reimport.status_code == 200, changed_reimport.text
+    changed_review = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert changed_review.status_code == 200, changed_review.text
+    assert changed_review.json()["reviewed"] == 1
+    assert calls == [10, 1, 1]
+    # Adding a competitor changes the coverage denominator, so all unlocked
+    # rows are queued again even when their individual metrics are unchanged.
+    denominator_reimport = client.post(f"/api/products/{product_id}/imports", files={"file": ("batch-new-competitor.xlsx", _workbook_bytes(changed_rows, ["B0TEST0001", "B0TEST0002", "B0TEST0003"]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert denominator_reimport.status_code == 200, denominator_reimport.text
+    denominator_review = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert denominator_review.status_code == 200, denominator_review.text
+    assert denominator_review.json()["reviewed"] == 11
+    assert calls == [10, 1, 1, 10, 1]
+    full_review = client.post(f"/api/products/{product_id}/semantic-review", json={"review_mode": "full", "batch_size": 10})
+    assert full_review.status_code == 200, full_review.text
+    assert full_review.json()["review_mode"] == "full"
+    assert full_review.json()["reviewed"] == 11
+    assert calls == [10, 1, 1, 10, 1, 10, 1]
     changed = client.patch(f"/api/products/{product_id}", json={"product_title": TITLE + " Updated"})
     assert changed.status_code == 200
     rerun = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
     assert rerun.status_code == 200
     assert rerun.json()["reviewed"] == 11
-    assert calls == [10, 1, 10, 1]
+    assert calls == [10, 1, 1, 10, 1, 10, 1, 10, 1]
 
 
 def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monkeypatch):
@@ -287,6 +363,31 @@ def test_semantic_review_downgrades_explicitly_broad_generic_query(client, monke
     assert reviewed.status_code == 200, reviewed.text
     result = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 10}).json()["items"][0]
     assert result["suggested_action"] == "observe"
+
+
+def test_semantic_review_promotes_repeated_negative_phrase_root_after_full_audit(client, monkeypatch):
+    configured = client.put(
+        "/api/ai-config",
+        json={"provider": "openrouter", "base_url": "https://api.example.com/v1", "model": "free-model", "api_key": "local-test-key-negative", "enabled": True},
+    )
+    assert configured.status_code == 200
+    created = client.post("/api/products", json={"name": "Negative phrase product", "site": "US", "product_title": TITLE, "bullet_points": BULLETS, "core_terms": ["boxwood wreath"]})
+    product_id = created.json()["id"]
+    rows = [["关键词", "相关ASIN", "月搜索量"], ["cheap decor", "B0TEST0001", 1200], ["cheap decor for home", "B0TEST0002", 900]]
+    imported = client.post(f"/api/products/{product_id}/imports", files={"file": ("negative.xlsx", _workbook_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert imported.status_code == 200, imported.text
+
+    def fake_ai(_config, request_payload):
+        candidates = json.loads(request_payload["messages"][1]["content"])["candidates"]
+        return {"reviews": [{"id": item["id"], "decision": "negative_exact", "relevance_score": 5, "confidence": 0.95, "reason_zh": "完整搜索词与产品不匹配"} for item in candidates]}
+
+    monkeypatch.setattr(main_module, "_ai_json_response", fake_ai)
+    reviewed = client.post(f"/api/products/{product_id}/semantic-review", json={"batch_size": 10})
+    assert reviewed.status_code == 200, reviewed.text
+    assert any(item["root"] == "cheap decor" for item in reviewed.json()["negative_phrase_promoted"])
+    suggestions = client.get(f"/api/products/{product_id}/keywords", params={"page_size": 10, "suggested_action": "negative_phrase"}).json()
+    assert suggestions["total"] == 1
+    assert suggestions["items"][0]["negative_phrase_root"] == "cheap decor"
 
 
 def test_background_semantic_review_reports_refresh_safe_progress(client, monkeypatch):

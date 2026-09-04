@@ -78,8 +78,11 @@ class AIConfigUpdate(BaseModel):
 
 class SemanticReviewRequest(BaseModel):
     keyword_ids: list[int] = Field(default_factory=list)
+    # Incremental review keeps completed results.  Full review explicitly
+    # resets only unlocked rows before running the same guarded pipeline.
+    review_mode: Literal["incremental", "full"] = "incremental"
     # `limit` is the total number of keywords to review. The endpoint sends
-    # them to MiMo in bounded batches so the full product library is audited.
+    # them to the configured AI provider in bounded batches so the full product library is audited.
     limit: int = Field(default=10000, ge=1, le=10000)
     batch_size: int = Field(default=40, ge=10, le=100)
     # Only independent network calls run concurrently. Database writes remain

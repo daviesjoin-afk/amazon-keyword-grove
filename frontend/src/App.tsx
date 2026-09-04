@@ -164,38 +164,68 @@ export default function App() {
     setToast('自定义名字和产品资料已保存。')
   }
 
-  async function runSemanticReview() {
+  async function runSemanticReview(reviewMode: 'incremental' | 'full' = 'incremental') {
     if (!selectedProduct || semanticReviewing) return
     if (!keywords.length) {
-      setToast('当前产品还没有关键词，请先导入关键词表后再进行 MiMo 审核。')
+      setToast('当前产品还没有关键词，请先导入关键词表后再进行 AI 审核。')
       return
     }
+    if (reviewMode === 'full' && !window.confirm('重新审核会重新处理所有未人工锁定的关键词，并产生新的模型调用。确定继续吗？')) return
     const reviewProduct = selectedProduct
     try {
-      await api.semanticReview(reviewProduct.id, undefined, true)
+      await api.semanticReview(reviewProduct.id, undefined, true, reviewMode)
       const status = await api.getSemanticReviewStatus(reviewProduct.id)
       if (selectedProductIdRef.current === reviewProduct.id) {
         setReviewProgress(status)
         setReviewPollNonce((current) => current + 1)
       }
-      if (status.status === 'completed' && status.pending === 0) setToast('当前产品全部关键词已经完成 MiMo 审核。')
-      else if (status.status === 'running') setToast(`已开始 MiMo 增量审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
-      else setToast('MiMo 审核状态已更新，请查看广告建议页的进度。')
+      if (status.status === 'completed' && status.pending === 0) setToast(reviewMode === 'full' ? '当前产品已完成重新审核，人工锁定记录未改变。' : '当前产品全部关键词已经完成 AI 审核。')
+      else if (status.status === 'running') setToast(`已开始${reviewMode === 'full' ? '重新' : '增量'}审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
+      else setToast('AI 审核状态已更新，请查看广告建议页的进度。')
     } catch (error) {
-      setToast(error instanceof Error ? `MiMo 审核未完成：${error.message}` : 'MiMo 审核未完成，请检查全局 AI 设置。')
+      setToast(error instanceof Error ? `AI 审核未完成：${error.message}` : 'AI 审核未完成，请检查全局 AI 设置。')
     }
   }
 
-  function updateKeywords(ids: string[], patch: Partial<KeywordRecord>) {
+  async function updateKeywords(ids: string[], patch: Partial<KeywordRecord>) {
     setKeywords((current) => current.map((item) => ids.includes(item.id) ? { ...item, ...patch } : item))
     if (drawerKeyword && ids.includes(drawerKeyword.id)) setDrawerKeyword((current) => current ? { ...current, ...patch } : current)
-    setToast(`已更新 ${ids.length} 条关键词，人工锁定字段不会被重新导入覆盖。`)
+    if (!selectedProduct || USE_MOCK) {
+      setToast(`已更新 ${ids.length} 条关键词，人工锁定字段不会被重新导入覆盖。`)
+      return
+    }
+    try {
+      await api.bulkUpdateKeywords(selectedProduct.id, ids, {
+        locked: patch.isLocked,
+        ...(patch.notes === undefined ? {} : { notes: patch.notes }),
+      })
+      await loadProductData(selectedProduct)
+      setToast(`已保存 ${ids.length} 条关键词的人工审批，刷新后仍会保留。`)
+    } catch (error) {
+      try { await loadProductData(selectedProduct) } catch { /* keep the last known local state */ }
+      setToast(error instanceof Error ? `关键词保存失败：${error.message}` : '关键词保存失败，请检查本地 API。')
+    }
   }
 
-  function saveKeyword(patch: Partial<KeywordRecord>) {
+  async function saveKeyword(patch: Partial<KeywordRecord>) {
     if (!drawerKeyword) return
-    updateKeywords([drawerKeyword.id], patch)
-    setDrawerKeyword((current) => current ? { ...current, ...patch } : current)
+    if (!selectedProduct || USE_MOCK) {
+      updateKeywords([drawerKeyword.id], patch)
+      return
+    }
+    const actionMap: Record<string, string> = { '精准投放': 'exact', '广泛探索': 'broad', '否定精准': 'negative_exact', '否定词组': 'negative_phrase', '观察': 'observe', '人工复核': 'manual_review' }
+    const payload: { action?: string | null; locked?: boolean; notes?: string } = {}
+    if (patch.suggestedAction) payload.action = patch.approvalStatus === '已驳回' ? null : actionMap[patch.suggestedAction]
+    if (patch.approvalStatus) payload.locked = patch.approvalStatus !== '已驳回'
+    if (patch.notes !== undefined) payload.notes = patch.notes
+    try {
+      const updated = await api.updateKeyword(selectedProduct.id, drawerKeyword.id, payload)
+      setKeywords((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setDrawerKeyword(updated)
+      setToast('关键词人工判断已保存，刷新后仍会保留。')
+    } catch (error) {
+      setToast(error instanceof Error ? `关键词保存失败：${error.message}` : '关键词保存失败，请检查本地 API。')
+    }
   }
 
   function exportKeywords() {

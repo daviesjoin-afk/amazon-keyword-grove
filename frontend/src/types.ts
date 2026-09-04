@@ -61,6 +61,14 @@ export interface KeywordRecord {
   demandSupplyRatio: number | null
   isLocked?: boolean
   semanticReviewed?: boolean
+  ruleEngineVersion?: string
+  finalActionSource?: string
+  conflictActions?: string[]
+  hasActionConflict?: boolean
+  negativePhraseRoot?: string
+  negativePhraseEvidence?: Record<string, unknown>
+  broadRootRank?: number | null
+  broadRootCandidate?: boolean
   lastUpdated: string
 }
 

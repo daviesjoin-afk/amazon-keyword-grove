@@ -23,7 +23,7 @@ from .ai_service import (
     semantic_review_signature as _semantic_review_signature,
     test_ai_connection as _test_ai_connection,
 )
-from .analyzer import MIN_COMPETITOR_COVERAGE_RATIO, MIN_TARGETING_SEARCH_VOLUME, _clear_generic_decor_mismatch, _has_product_anchor, _is_generic_decor_without_anchor, analyze_keyword, infer_core_terms, minimum_competitor_coverage
+from .analyzer import MIN_COMPETITOR_COVERAGE_RATIO, MIN_TARGETING_SEARCH_VOLUME, RULE_ENGINE_VERSION, _clear_generic_decor_mismatch, _has_product_anchor, _is_generic_decor_without_anchor, _negative_phrase_protected_roots, analyze_keyword, derive_negative_phrase_candidates, infer_core_terms, minimum_competitor_coverage, root_candidate_metadata
 from .api_support import (
     api_error as _api_error,
     get_product as _get_product,
@@ -36,7 +36,7 @@ from .api_support import (
     product_response as _product_response,
 )
 from .db import init_db, read_connection, transaction
-from .importer import ImportValidationError, _product_dict, _update_automatic_analysis, import_parsed_workbook, parse_workbook
+from .importer import ImportValidationError, _product_dict, _reconcile_broad_root_actions, _update_automatic_analysis, import_parsed_workbook, parse_workbook
 from .schemas import AIConfigUpdate, KeywordUpdate, ProductCreate, ProductUpdate, SemanticReviewRequest
 from .utils import clean_text, dumps, loads, now_iso, tokens
 
@@ -116,27 +116,51 @@ def test_ai_config() -> dict[str, Any]:
     return _test_ai_connection(_ai_config_or_error())
 
 
+def _prepare_full_semantic_review(product_id: int) -> None:
+    """Reset unlocked semantic state for an explicit full re-review."""
+
+    with transaction() as connection:
+        product = _product_dict(_get_product(connection, product_id))
+        _update_automatic_analysis(connection, product_id, product)
+        connection.execute(
+            """UPDATE keywords
+               SET semantic_reviewed = CASE WHEN manual_locked = 1 THEN 1 ELSE 0 END,
+                   semantic_reviewed_at = CASE WHEN manual_locked = 1 THEN semantic_reviewed_at ELSE NULL END,
+                   semantic_review_signature = CASE WHEN manual_locked = 1 THEN semantic_review_signature ELSE NULL END,
+                   updated_at = ?
+               WHERE product_id = ? AND deleted_at IS NULL""",
+            (now_iso(), product_id),
+        )
+
+
 def _semantic_review_sync(
     product_id: int,
     payload: SemanticReviewRequest,
     progress_callback: Callable[[int, int, bool, str | None], None] | None = None,
+    *,
+    full_review_prepared: bool = False,
 ) -> dict[str, Any]:
     """Run local-rule candidates through bounded concurrent semantic batches."""
 
     config = _ai_config_or_error()
+    if payload.review_mode == "full" and not full_review_prepared:
+        _prepare_full_semantic_review(product_id)
     with read_connection() as connection:
         product_row = _get_product(connection, product_id)
-        product = _product_dict(product_row)
         competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (product_id,)).fetchone()[0])
+        product = {**_product_dict(product_row), "competitor_total": competitor_total}
         source_count_rows = connection.execute("SELECT keyword_id, COUNT(*) AS count FROM keyword_sources WHERE product_id = ? GROUP BY keyword_id", (product_id,)).fetchall()
         keyword_source_counts = {int(item["keyword_id"]): int(item["count"]) for item in source_count_rows}
         if payload.keyword_ids:
             placeholders = ", ".join("?" for _ in payload.keyword_ids)
-            rows = connection.execute(f"SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND id IN ({placeholders}) ORDER BY id ASC LIMIT ?", (product_id, *payload.keyword_ids, payload.limit)).fetchall()
+            locked_clause = " AND manual_locked = 0" if payload.review_mode == "full" else ""
+            rows = connection.execute(f"SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND id IN ({placeholders}){locked_clause} ORDER BY id ASC LIMIT ?", (product_id, *payload.keyword_ids, payload.limit)).fetchall()
         else:
             rows = connection.execute(
                 """SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND semantic_reviewed = 0
-                   ORDER BY COALESCE(monthly_search_volume, -1) DESC, relevance_score DESC, id ASC LIMIT ?""",
+                   ORDER BY COALESCE(monthly_search_volume, -1) DESC,
+                            COALESCE(NULLIF((SELECT COUNT(*) FROM keyword_sources ks WHERE ks.keyword_id = keywords.id), 0), related_product_count, 0) DESC,
+                            relevance_score DESC, id ASC LIMIT ?""",
                 (product_id, payload.limit),
             ).fetchall()
     if not rows:
@@ -144,10 +168,11 @@ def _semantic_review_sync(
             total = connection.execute("SELECT COUNT(*) AS count FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchone()["count"]
         if not total:
             _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
-        return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": 0, "batches": 0, "already_reviewed": True, "items": []}
+        promoted = _promote_negative_phrase_recommendations(product_id, product)
+        return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "review_mode": payload.review_mode, "reviewed": 0, "batches": 0, "already_reviewed": True, "negative_phrase_promoted": promoted, "items": []}
 
     all_candidates = [
-        {"id": int(row["id"]), "keyword": row["keyword_raw"], "translation": row["keyword_translation"], "rule_score": row["relevance_score"], "rule_strength": row["match_strength_auto"], "rule_action": row["suggested_action_auto"], "monthly_search_volume": row["monthly_search_volume"], "source_count": max(0, int(row["related_product_count"] if row["related_product_count"] is not None else keyword_source_counts.get(int(row["id"]), len(loads(row["related_asins_json"], []))) or 0)), "source_total": competitor_total, "manual_locked": bool(row["manual_locked"])}
+        {"id": int(row["id"]), "keyword": row["keyword_raw"], "translation": row["keyword_translation"], "rule_score": row["relevance_score"], "rule_strength": row["match_strength_auto"], "rule_action": row["suggested_action_auto"], "monthly_search_volume": row["monthly_search_volume"], "source_count": max(0, int(max(int(row["related_product_count"]) if row["related_product_count"] is not None else 0, keyword_source_counts.get(int(row["id"]), 0), len(loads(row["related_asins_json"], []))))), "source_total": competitor_total, "manual_locked": bool(row["manual_locked"]), "manual_action": row["manual_action"], "root_metadata": root_candidate_metadata(row["keyword_raw"], product)}
         for row in rows
     ]
     actions = {"exact", "broad", "negative_exact", "negative_phrase", "observe"}
@@ -188,14 +213,22 @@ def _semantic_review_sync(
                 keyword_text = clean_text(candidate["keyword"]).casefold()
                 score = max(0, min(100, int(review.get("relevance_score", candidate["rule_score"]) or 0)))
                 confidence = max(0.0, min(1.0, float(review.get("confidence", 0.5) or 0.5)))
-                reason = clean_text(review.get("reason_zh"))[:600] or "MiMo 语义审核未给出详细理由"
+                reason = clean_text(review.get("reason_zh"))[:600] or "AI 语义审核未给出详细理由"
+                rule_adjusted = False
                 if decision in {"exact", "broad"} and candidate["monthly_search_volume"] is not None and int(candidate["monthly_search_volume"]) < MIN_TARGETING_SEARCH_VOLUME:
                     decision = "observe"
                     reason += f"；月搜索量仅 {int(candidate['monthly_search_volume'])}，低于 {MIN_TARGETING_SEARCH_VOLUME} 投放门槛，降为观察"
-                minimum_coverage = minimum_competitor_coverage(candidate["source_total"] or 20)
-                if decision in {"exact", "broad"} and candidate["source_count"] < minimum_coverage:
+                    rule_adjusted = True
+                if decision in {"exact", "broad"} and not candidate["source_total"]:
                     decision = "observe"
-                    reason += f"；竞品覆盖仅 {candidate['source_count']}/{candidate['source_total'] or 20}，低于 {minimum_coverage}/{candidate['source_total'] or 20}（{MIN_COMPETITOR_COVERAGE_RATIO:.0%}相关性门槛），降为观察"
+                    reason += "；竞品 ASIN 覆盖数据尚未导入，无法计算相关性占比，降为观察"
+                    rule_adjusted = True
+                else:
+                    minimum_coverage = minimum_competitor_coverage(candidate["source_total"])
+                    if decision in {"exact", "broad"} and candidate["source_count"] < minimum_coverage:
+                        decision = "observe"
+                        reason += f"；竞品覆盖仅 {candidate['source_count']}/{candidate['source_total']}，低于 {minimum_coverage}/{candidate['source_total']}（{MIN_COMPETITOR_COVERAGE_RATIO:.0%}相关性门槛），降为观察"
+                        rule_adjusted = True
                 # Keep a clear, low-scoring generic-decor mismatch as a
                 # negative-exact draft even if the model answers observe or
                 # exact. This is the double-audit guard for cases such as
@@ -204,11 +237,13 @@ def _semantic_review_sync(
                 if candidate["rule_action"] == "negative_exact" and decision in {"observe", "exact", "broad"} and score < 50:
                     if _clear_generic_decor_mismatch(keyword_text, analyze_keyword(keyword_text, product), product):
                         decision = "negative_exact"
-                        reason += "；内置规则与 MiMo 均判定为泛房间装饰查询，保留否定精准"
+                        reason += "；内置规则与 AI 均判定为泛房间装饰查询，保留否定精准"
+                        rule_adjusted = True
                 if decision in {"exact", "broad"} and keyword_text not in core_terms and _is_generic_decor_without_anchor(keyword_text, product):
                     decision = "observe"
                     reason += "；装饰类意图过宽且缺少花环/产品类型锚点，降为观察/暂不投放"
-                # MiMo can describe a query as too broad while accidentally
+                    rule_adjusted = True
+                # The semantic model can describe a query as too broad while accidentally
                 # returning `exact`. For a non-core short generic query,
                 # honour that semantic warning and keep the term out of the
                 # exact budget.
@@ -216,15 +251,18 @@ def _semantic_review_sync(
                     if _is_short_generic_query(keyword_text, product) and (_semantic_reason_is_too_broad(reason) or score < 80):
                         decision = "observe"
                         reason += "；语义审核提示词义过宽或具体度不足，降为观察/暂不投放"
+                        rule_adjusted = True
                 # A complete, sufficiently searched product root is the one
                 # intentional broad seed. Long-tail terms are never promoted
                 # by this guard.
                 if candidate["rule_action"] == "broad" and decision == "exact" and score >= 60:
                     decision = "broad"
                     reason += "；完整核心词根且语义相关度达标，保留广泛抓词根建议"
+                    rule_adjusted = True
                 if decision == "broad" and keyword_text not in core_terms:
                     decision = "exact"
                     reason += "；广泛仅允许使用完整核心词根，已降为精准草稿"
+                    rule_adjusted = True
                 if decision == "negative_phrase":
                     root = clean_text(review.get("negative_phrase_root") or keyword_text).casefold()
                     related = connection.execute("SELECT relevance_score FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND keyword_normalized LIKE ?", (product_id, f"%{root}%")).fetchall()
@@ -242,36 +280,101 @@ def _semantic_review_sync(
                     if decision == "negative_phrase" and (len(tokens(root)) < 2 or len(related) < 2 or any(int(item["relevance_score"] or 0) >= 50 for item in related)):
                         decision = "negative_exact"
                         reason += "；否定词组可能误伤相关词或词根过短，已降为否定精准草稿"
+                        rule_adjusted = True
                 strength = "strong" if score >= 80 else "medium" if score >= 50 else "weak" if score >= 20 else "irrelevant"
                 signature = _semantic_review_signature(product, candidate)
+                final_source = "manual" if candidate.get("manual_action") else "rule_gate" if rule_adjusted else "semantic"
+                conflict_actions = []
+                if candidate.get("manual_action") and candidate["manual_action"] != decision:
+                    conflict_actions = sorted({clean_text(candidate["manual_action"]).casefold(), decision})
                 if not candidate["manual_locked"]:
                     connection.execute("""UPDATE keywords SET relevance_score = ?, match_strength_auto = ?, suggested_action_auto = ?, suggested_match_type = ?,
-                        advice_reason = ?, advice_confidence = ?, advice_risk_level = ?, semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?""",
-                        (score, strength, decision, decision, "MiMo 语义审核：" + reason, confidence, "high" if decision == "negative_phrase" else "medium" if decision in {"broad", "negative_exact", "observe"} else "low", timestamp, signature, timestamp, keyword_id),
+                        advice_reason = ?, advice_confidence = ?, advice_risk_level = ?, semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?,
+                        rule_engine_version = ?, rule_action_before_semantic = ?, final_action_source = ?, conflict_actions_json = ?,
+                        protected_terms_json = ?, updated_at = ? WHERE id = ?""",
+                        (score, strength, decision, decision, "AI 语义审核：" + reason, confidence, "high" if decision == "negative_phrase" else "medium" if decision in {"broad", "negative_exact", "observe"} else "low", timestamp, signature, RULE_ENGINE_VERSION, candidate["rule_action"], final_source, dumps(conflict_actions), dumps(sorted(_negative_phrase_protected_roots(product))), timestamp, keyword_id),
                     )
                 else:
-                    connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, updated_at = ? WHERE id = ?", (timestamp, signature, timestamp, keyword_id))
-                connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'mimo_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"]}), timestamp))
-                applied.append({"id": keyword_id, "keyword": candidate["keyword"], "decision": decision, "relevance_score": score, "reason": reason, "manual_locked": candidate["manual_locked"]})
+                    connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = ?, semantic_review_signature = ?, rule_engine_version = ?, rule_action_before_semantic = ?, final_action_source = ?, conflict_actions_json = ?, updated_at = ? WHERE id = ?", (timestamp, signature, RULE_ENGINE_VERSION, candidate["rule_action"], final_source, dumps(conflict_actions), timestamp, keyword_id))
+                connection.execute("INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'mimo_semantic_review', ?, ?)", (product_id, keyword_id, dumps({"decision": decision, "score": score, "confidence": confidence, "manual_locked": candidate["manual_locked"], "rule_action_before_semantic": candidate["rule_action"], "final_action_source": final_source, "conflict_actions": conflict_actions}), timestamp))
+                applied.append({"id": keyword_id, "keyword": candidate["keyword"], "decision": decision, "relevance_score": score, "reason": reason, "manual_locked": candidate["manual_locked"], "final_action_source": final_source, "conflict_actions": conflict_actions})
         if progress_callback:
             progress_callback(batch_index + 1, len(candidates), True, None)
 
     if failed_batches and not applied:
         first_error = failed_batches[0]["error"]
-        _api_error(502, "ai_review_failed", f"MiMo 审核失败，{len(failed_batches)} 批均未完成：{first_error}")
+        _api_error(502, "ai_review_failed", f"AI 语义审核失败，{len(failed_batches)} 批均未完成：{first_error}")
+
+    # Phrase negatives are derived only after the entire product-level set of
+    # exact decisions has been persisted.  Broad roots are reconciled at the
+    # same boundary so the product-level ten-term cap is deterministic.
+    promoted = _promote_negative_phrase_recommendations(product_id, product)
+    with transaction() as connection:
+        ranked_broad = _reconcile_broad_root_actions(connection, product_id, product)
+    promoted_by_id = {item["id"]: item for item in promoted}
+    for item in applied:
+        if item["id"] in promoted_by_id:
+            item.update({"decision": "negative_phrase", "negative_phrase_root": promoted_by_id[item["id"]]["root"], "reason": promoted_by_id[item["id"]]["reason"]})
 
     return {
         "product_id": product_id,
         "provider": clean_text(config.get("provider")),
         "model": clean_text(config.get("model")),
+        "review_mode": payload.review_mode,
         "reviewed": len(applied),
         "batches": len(batch_specs),
         "successful_batches": len(batch_specs) - len(failed_batches),
         "failed_batches": failed_batches,
         "partial": bool(failed_batches),
         "concurrency": worker_count,
+        "negative_phrase_promoted": promoted,
+        "broad_root_candidates": ranked_broad,
         "items": applied,
     }
+
+
+def _promote_negative_phrase_recommendations(product_id: int, product: dict[str, Any]) -> list[dict[str, Any]]:
+    """Persist safe product-level phrase-negative drafts after semantic review."""
+
+    with transaction() as connection:
+        rows = [dict(row) for row in connection.execute("SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchall()]
+        candidates = derive_negative_phrase_candidates(rows, product)
+        promoted: list[dict[str, Any]] = []
+        timestamp = now_iso()
+        promoted_ids: set[int] = set()
+        for root, evidence in sorted(candidates.items(), key=lambda item: (-int(item[1].get("root_length", len(item[0].split()))), item[0])):
+            representative = connection.execute(
+                "SELECT id, keyword_raw, manual_locked, manual_action, suggested_action_auto FROM keywords WHERE id = ? AND product_id = ? AND deleted_at IS NULL",
+                (evidence["representative_id"], product_id),
+            ).fetchone()
+            if representative is None or int(representative["id"]) in promoted_ids or representative["manual_locked"] or representative["manual_action"]:
+                continue
+            if representative["suggested_action_auto"] != "negative_exact":
+                continue
+            reason = f"基于否定精准词根二次审核：建议否定词组“{root}”；已审核 {evidence['affected_count']} 个受影响词，未发现相关产品组合"
+            impact = {
+                "root": root,
+                "seed_count": evidence["seed_count"],
+                "seed_keywords": evidence["seed_keywords"],
+                "affected_count": evidence["affected_count"],
+                "affected_keywords": evidence["affected_keywords"][:50],
+                "protected_keywords": evidence["protected_keywords"],
+                "blocked": False,
+                "basis": "已审核否定精准词的词根重复度 + 受影响词语义结果 + 产品锚点误伤检查",
+            }
+            connection.execute(
+                """UPDATE keywords SET suggested_action_auto = 'negative_phrase', suggested_match_type = 'negative_phrase',
+                   advice_reason = ?, advice_risk_level = 'high', negative_impact_json = ?, negative_phrase_eligible = 1,
+                   negative_phrase_evidence_json = ?, final_action_source = 'rule_gate', updated_at = ? WHERE id = ?""",
+                (reason, dumps(impact), dumps(evidence), timestamp, representative["id"]),
+            )
+            connection.execute(
+                "INSERT INTO audit_logs(product_id, keyword_id, action, details_json, created_at) VALUES (?, ?, 'negative_phrase_derived', ?, ?)",
+                (product_id, representative["id"], dumps(impact), timestamp),
+            )
+            promoted_ids.add(int(representative["id"]))
+            promoted.append({"id": int(representative["id"]), "keyword": representative["keyword_raw"], "root": root, "affected_count": evidence["affected_count"], "reason": reason})
+        return promoted
 
 
 def _semantic_review_counts(product_id: int) -> tuple[int, int]:
@@ -307,6 +410,7 @@ def _semantic_review_status_snapshot(product_id: int) -> dict[str, Any]:
         "updated_at": state.get("updated_at"),
         "completed_at": state.get("completed_at"),
         "error": state.get("error"),
+        "review_mode": state.get("review_mode", "incremental"),
         "items": [],
     }
 
@@ -325,7 +429,7 @@ def _run_background_semantic_review(product_id: int, payload: SemanticReviewRequ
             state["updated_at"] = now_iso()
 
     try:
-        result = _semantic_review_sync(product_id, payload, progress_callback=on_batch_complete)
+        result = _semantic_review_sync(product_id, payload, progress_callback=on_batch_complete, full_review_prepared=payload.review_mode == "full")
         with _REVIEW_JOBS_LOCK:
             state = _REVIEW_JOBS.get(product_id)
             if state is not None:
@@ -348,6 +452,13 @@ def _run_background_semantic_review(product_id: int, payload: SemanticReviewRequ
 def _start_background_semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
     with read_connection() as connection:
         _get_product(connection, product_id)
+    with _REVIEW_JOBS_LOCK:
+        current = _REVIEW_JOBS.get(product_id)
+        already_running = bool(current and current.get("status") == "running")
+    if already_running:
+        return _semantic_review_status_snapshot(product_id)
+    if payload.review_mode == "full":
+        _prepare_full_semantic_review(product_id)
     total, reviewed = _semantic_review_counts(product_id)
     if not total:
         _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
@@ -366,11 +477,11 @@ def _start_background_semantic_review(product_id: int, payload: SemanticReviewRe
             _REVIEW_JOBS[product_id] = {
                 "status": "running", "batches_total": batch_total, "batches_completed": 0,
                 "successful_batches": 0, "failed_batches": [], "started_at": timestamp,
-                "updated_at": timestamp, "completed_at": None, "error": None,
+                "updated_at": timestamp, "completed_at": None, "error": None, "review_mode": payload.review_mode,
             }
     if already_running:
         return _semantic_review_status_snapshot(product_id)
-    thread = threading.Thread(target=_run_background_semantic_review, args=(product_id, payload), name=f"mimo-review-{product_id}", daemon=True)
+    thread = threading.Thread(target=_run_background_semantic_review, args=(product_id, payload), name=f"ai-review-{product_id}", daemon=True)
     thread.start()
     return _semantic_review_status_snapshot(product_id)
 
@@ -645,6 +756,14 @@ def update_keyword(product_id: int, keyword_id: int, payload: KeywordUpdate) -> 
         row = connection.execute("SELECT * FROM keywords WHERE id = ? AND product_id = ?", (keyword_id, product_id)).fetchone()
         if row is None:
             _api_error(404, "keyword_not_found", "关键词不存在")
+        action_supplied = "manual_action" in values or "action" in values
+        manual_action = values.get("manual_action", values.get("action"))
+        if action_supplied:
+            normalized_manual = clean_text(manual_action).casefold()
+            normalized_auto = clean_text(row["suggested_action_auto"]).casefold()
+            conflict = sorted({normalized_manual, normalized_auto}) if normalized_manual and normalized_manual != normalized_auto else []
+            assignments.extend(["conflict_actions_json = ?", "final_action_source = ?"])
+            params.extend([dumps(conflict), "manual" if normalized_manual else "rule"])
         if assignments:
             assignments.append("updated_at = ?")
             params.extend([timestamp, keyword_id])
@@ -710,8 +829,9 @@ def product_stats(product_id: int) -> dict[str, Any]:
         strength_rows = connection.execute("SELECT COALESCE(manual_match_strength, match_strength_auto) AS value, COUNT(*) AS count FROM keywords WHERE product_id = ? AND deleted_at IS NULL GROUP BY value", (product_id,)).fetchall()
         category_rows = connection.execute("SELECT COALESCE(manual_category, category_auto) AS value, COUNT(*) AS count FROM keywords WHERE product_id = ? AND deleted_at IS NULL GROUP BY value ORDER BY count DESC", (product_id,)).fetchall()
         action_rows = connection.execute("SELECT COALESCE(manual_action, suggested_action_auto) AS value, COUNT(*) AS count FROM keywords WHERE product_id = ? AND deleted_at IS NULL GROUP BY value ORDER BY count DESC", (product_id,)).fetchall()
+        conflict_count = int(connection.execute("SELECT COUNT(*) FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND conflict_actions_json NOT IN ('[]', '')", (product_id,)).fetchone()[0])
         source_count = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ?", (product_id,)).fetchone()[0])
-        return {"product_id": product_id, "total_keywords": total, "source_asins": source_count, "by_match_strength": {row["value"]: int(row["count"]) for row in strength_rows if row["value"]}, "by_category": {row["value"]: int(row["count"]) for row in category_rows if row["value"]}, "by_suggested_action": {row["value"]: int(row["count"]) for row in action_rows if row["value"]}, "updated_at": now_iso()}
+        return {"product_id": product_id, "total_keywords": total, "source_asins": source_count, "conflict_count": conflict_count, "by_match_strength": {row["value"]: int(row["count"]) for row in strength_rows if row["value"]}, "by_category": {row["value"]: int(row["count"]) for row in category_rows if row["value"]}, "by_suggested_action": {row["value"]: int(row["count"]) for row in action_rows if row["value"]}, "updated_at": now_iso()}
 
 
 @app.get("/api/products/{product_id}/asins")
@@ -729,11 +849,11 @@ def export_keywords(product_id: int, format: str = Query("csv", pattern="^(csv|x
         _get_product(connection, product_id)
         rows = connection.execute(f"SELECT k.* FROM keywords k WHERE {where} ORDER BY COALESCE(k.monthly_search_volume, -1) DESC, k.id ASC", params).fetchall()
         output = io.BytesIO()
-        headers = ["关键词", "标准化关键词", "相关性分", "匹配强度", "建议动作", "月搜索量", "ABA周排名", "PPC竞价", "来源ASIN", "数据质量告警", "备注"]
+        headers = ["关键词", "标准化关键词", "相关性分", "竞品覆盖", "匹配强度", "建议动作", "最终动作来源", "规则版本", "月搜索量", "ABA周排名", "PPC竞价", "来源ASIN", "数据质量告警", "备注"]
         values = [headers]
         for row in rows:
             data = _keyword_response(row, connection)
-            values.append([data.get("keyword_raw"), data.get("keyword_normalized"), data.get("relevance_score"), data.get("match_strength"), data.get("suggested_action_label"), data.get("monthly_search_volume"), data.get("aba_weekly_rank"), data.get("ppc_bid_raw"), "/".join(data.get("related_asins") or []), ";".join(data.get("data_quality_flags") or []), data.get("notes")])
+            values.append([data.get("keyword_raw"), data.get("keyword_normalized"), data.get("relevance_score"), f"{data.get('competitor_coverage', 0)}/{data.get('competitor_total', 0)}", data.get("match_strength"), data.get("suggested_action_label"), data.get("final_action_source"), data.get("rule_engine_version"), data.get("monthly_search_volume"), data.get("aba_weekly_rank"), data.get("ppc_bid_raw"), "/".join(data.get("related_asins") or []), ";".join(data.get("data_quality_flags") or []), data.get("notes")])
         if format == "csv":
             text_buffer = io.StringIO(newline="")
             writer = csv.writer(text_buffer)

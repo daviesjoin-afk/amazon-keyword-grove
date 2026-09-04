@@ -6,6 +6,7 @@ export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
 export interface SemanticReviewResult {
   product_id?: number
+  review_mode?: 'incremental' | 'full'
   status?: SemanticReviewStatus['status']
   total?: number
   pending?: number
@@ -35,6 +36,7 @@ export interface SemanticReviewStatus {
   updated_at?: string | null
   completed_at?: string | null
   error?: string | null
+  review_mode?: 'incremental' | 'full'
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -54,9 +56,11 @@ export interface KeywordApi {
   getFieldMappings(): Promise<ApiResult<FieldMapping[]>>
   createProduct(payload: ProductPayload): Promise<ApiResult<Product>>
   updateProduct(productId: string, payload: ProductCopyPayload): Promise<ApiResult<Product>>
+  updateKeyword(productId: string, keywordId: string, payload: { action?: string | null; locked?: boolean; notes?: string }): Promise<KeywordRecord>
+  bulkUpdateKeywords(productId: string, keywordIds: string[], payload: { locked?: boolean; notes?: string }): Promise<{ updated: number; keyword_ids: string[] }>
   getAIConfig(): Promise<AIConfig>
   saveAIConfig(payload: AIConfigPayload): Promise<AIConfig>
-  semanticReview(productId: string, limit?: number, background?: boolean): Promise<SemanticReviewResult>
+  semanticReview(productId: string, limit?: number, background?: boolean, reviewMode?: 'incremental' | 'full'): Promise<SemanticReviewResult>
   getSemanticReviewStatus(productId: string): Promise<SemanticReviewStatus>
   importFile(productId: string, file: File): Promise<Record<string, unknown>>
 }
@@ -103,6 +107,8 @@ function normalizeKeyword(item: BackendKeyword, rootCandidates: string[], produc
   const rawTraffic = (item.traffic_types || []) as string[]
   const match = strengthLabels[String(item.match_strength)] || '不相关'
   const action = actionLabels[String(item.suggested_action)] || actionLabels[String(item.suggested_action_auto)] || '人工复核'
+  const rawSuggestionReason = String(item.advice_reason || '数据不足，等待人工复核')
+  const suggestionReason = rawSuggestionReason.replace(/^(?:MiMo|AI)\s*语义审核：/, '')
   const confidence = Math.round(Number(item.advice_confidence || 0) * (Number(item.advice_confidence || 0) <= 1 ? 100 : 1))
   const riskRaw = String(item.advice_risk_level || 'medium')
   const normalizedText = String(item.keyword_normalized || '')
@@ -117,10 +123,19 @@ function normalizeKeyword(item: BackendKeyword, rootCandidates: string[], produc
     monthlySearchVolume: item.monthly_search_volume == null ? null : Number(item.monthly_search_volume), abaRank: item.aba_weekly_rank == null ? null : Number(item.aba_weekly_rank),
     competitorCoverage, competitorTotal, trafficTypes: rawTraffic.map((value) => trafficLabels[value.toLowerCase()] || (value.includes('自然') ? '自然' : value.includes('SP') ? 'SP' : value.includes('品牌') ? '品牌' : value.includes('视频') ? '视频' : value.includes('HR') ? 'HR' : 'AC')),
     root, category: String(item.category || '待确认'), intent: String(item.category || '待确认'),
-    suggestedAction: action, suggestionReason: String(item.advice_reason || '数据不足，等待人工复核'), confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
+    suggestedAction: action, suggestionReason, confidence, risk: riskRaw === 'high' ? '高' : riskRaw === 'low' ? '低' : '中',
     approvalStatus: item.manual_locked ? '已接受' : '待审批', notes: item.notes ? String(item.notes) : undefined, sourceAsins: asins,
     ppcBid: item.ppc_bid == null ? null : Number(item.ppc_bid), titleDensity: item.title_density == null ? null : Number(item.title_density), demandSupplyRatio: item.demand_supply_ratio == null ? null : Number(item.demand_supply_ratio),
-    isLocked: Boolean(item.manual_locked), semanticReviewed: Boolean(item.semantic_reviewed) || String(item.advice_reason || '').startsWith('MiMo 语义审核：'), lastUpdated: String(item.updated_at || ''),
+    isLocked: Boolean(item.manual_locked), semanticReviewed: Boolean(item.semantic_reviewed) || String(item.advice_reason || '').startsWith('MiMo 语义审核：') || String(item.advice_reason || '').startsWith('AI 语义审核：'),
+    ruleEngineVersion: item.rule_engine_version ? String(item.rule_engine_version) : undefined,
+    finalActionSource: item.final_action_source ? String(item.final_action_source) : undefined,
+    conflictActions: Array.isArray(item.conflict_actions) ? item.conflict_actions.map((value) => String(value)) : [],
+    hasActionConflict: Boolean(item.has_action_conflict),
+    negativePhraseRoot: item.negative_phrase_root ? String(item.negative_phrase_root) : undefined,
+    negativePhraseEvidence: item.negative_phrase_evidence && typeof item.negative_phrase_evidence === 'object' ? item.negative_phrase_evidence as Record<string, unknown> : undefined,
+    broadRootRank: item.broad_root_rank == null ? null : Number(item.broad_root_rank),
+    broadRootCandidate: Boolean(item.broad_root_candidate),
+    lastUpdated: String(item.updated_at || ''),
   }
 }
 
@@ -169,6 +184,15 @@ export const api: KeywordApi = {
     const stats = await request<Record<string, unknown>>(`/products/${encodeURIComponent(productId)}/stats`)
     return { data: normalizeProduct(updated, stats), source: 'api' }
   },
+  async updateKeyword(productId, keywordId, payload) {
+    if (USE_MOCK) throw new Error('演示模式不保存关键词判断')
+    const updated = await request<BackendKeyword>(`/products/${encodeURIComponent(productId)}/keywords/${encodeURIComponent(keywordId)}`, { method: 'PATCH', body: JSON.stringify(payload) })
+    return normalizeKeyword(updated, [], 0)
+  },
+  async bulkUpdateKeywords(productId, keywordIds, payload) {
+    if (USE_MOCK) throw new Error('演示模式不保存关键词判断')
+    return request<{ updated: number; keyword_ids: string[] }>(`/products/${encodeURIComponent(productId)}/keywords/bulk-update`, { method: 'POST', body: JSON.stringify({ keyword_ids: keywordIds.map((id) => Number(id)), ...payload }) })
+  },
   async getAIConfig() {
     if (USE_MOCK) return normalizeAIConfig({})
     return normalizeAIConfig(await request<Record<string, unknown>>('/ai-config'))
@@ -178,9 +202,9 @@ export const api: KeywordApi = {
     const saved = await request<Record<string, unknown>>('/ai-config', { method: 'PUT', body: JSON.stringify({ provider: payload.provider, base_url: payload.baseUrl, model: payload.model, api_key: payload.apiKey || null, enabled: payload.enabled, timeout_seconds: payload.timeoutSeconds }) })
     return normalizeAIConfig(saved)
   },
-  async semanticReview(productId, limit, background = false) {
+  async semanticReview(productId, limit, background = false, reviewMode: 'incremental' | 'full' = 'incremental') {
     if (USE_MOCK) throw new Error('演示模式不调用 AI 语义审核')
-    const body = { ...(limit == null ? {} : { limit }), background }
+    const body = { ...(limit == null ? {} : { limit }), background, review_mode: reviewMode }
     return request<SemanticReviewResult>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
   },
   async getSemanticReviewStatus(productId) {

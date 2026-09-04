@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -91,6 +92,23 @@ CORE_TITLE_MODIFIERS = {
 CORE_TITLE_BOUNDARY = re.compile(r"\b(?:for|with|from|by|in|on|at|and)\b")
 MIN_TARGETING_SEARCH_VOLUME = 300
 MIN_COMPETITOR_COVERAGE_RATIO = 0.30
+RULE_ENGINE_VERSION = "ad-rules-v2"
+MAX_BROAD_ROOTS = 10
+NEGATIVE_PHRASE_MIN_SEEDS = 2
+NEGATIVE_PHRASE_MIN_AFFECTED = 2
+_NEGATIVE_PHRASE_STOPWORDS = {
+    "a", "an", "and", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with",
+}
+# A one-word negative phrase is materially broader than a negative exact.  A
+# protected root is therefore never emitted automatically, even when the
+# current workbook contains only negative-exact examples for it.
+_NEGATIVE_PHRASE_PROTECTED_ROOTS = {
+    "room", "rooms", "home", "decor", "decoration", "decorations", "rv",
+    "front", "door", "wreath", "wreaths", "artificial", "greenery", "indoor", "outdoor",
+}
+_NEGATIVE_PHRASE_PROTECTED_PAIRS = {
+    "room decor", "home decor", "front door", "door wreath", "artificial wreath", "greenery wreath",
+}
 
 
 def minimum_competitor_coverage(total: int) -> int:
@@ -106,8 +124,16 @@ def _competitor_coverage(row: dict[str, Any], product: dict[str, Any]) -> tuple[
     if raw_count is None:
         raw_count = row.get("competitor_coverage")
     count = None if raw_count is None else max(0, int(raw_count))
-    raw_total = row.get("competitor_total") or product.get("competitor_total") or 20
-    return count, max(1, int(raw_total))
+    raw_total = row.get("competitor_total")
+    if raw_total is None:
+        raw_total = product.get("competitor_total")
+    # No imported competitor set means the denominator is unknown.  Preserve
+    # that as 0 instead of fabricating the historical default of 20 ASINs.
+    try:
+        total = max(0, int(raw_total)) if raw_total is not None else 0
+    except (TypeError, ValueError):
+        total = 0
+    return count, total
 
 
 @dataclass
@@ -172,6 +198,109 @@ def infer_core_terms(product: dict[str, Any]) -> list[str]:
     if len(words) >= 2:
         return [" ".join(words[-2:])]
     return words[:1]
+
+
+def _configured_terms(product: dict[str, Any], key: str) -> list[str]:
+    """Read optional product-level term lists without trusting malformed JSON."""
+
+    values: Any = product.get(key)
+    settings = product.get("settings")
+    if values is None and isinstance(settings, dict):
+        values = settings.get(key)
+    return [normalize_keyword(term) for term in _as_terms(values) if normalize_keyword(term)]
+
+
+def _product_core_terms(product: dict[str, Any]) -> list[str]:
+    """Return explicit roots, falling back to the title-derived root."""
+
+    _, explicit_core, _, _ = _profile(product)
+    return [normalize_keyword(term) for term in (explicit_core or infer_core_terms(product)) if normalize_keyword(term)]
+
+
+def root_candidate_metadata(keyword: str, product: dict[str, Any]) -> dict[str, str | bool | None]:
+    """Classify a keyword for targeting explanations and audit fields.
+
+    This deliberately does not make an ad decision.  It only identifies where
+    a root came from so the final rule/semantic action can be explained and
+    rolled back independently.
+    """
+
+    normalized = normalize_keyword(keyword)
+    core_terms = _product_core_terms(product)
+    configured_broad = _configured_terms(product, "broad_terms")
+    if normalized in configured_broad:
+        return {"candidate": True, "type": "synonym", "source": "settings.broad_terms", "root": normalized}
+    if normalized in core_terms:
+        source = "product.core_terms" if _as_terms(product.get("core_terms")) else "title.inferred"
+        return {"candidate": True, "type": "core", "source": source, "root": normalized}
+    word_count = len(tokens(normalized))
+    if any(token.isdigit() for token in tokens(normalized)):
+        return {"candidate": False, "type": "fitment_or_part", "source": "keyword", "root": None}
+    if word_count >= 3:
+        return {"candidate": False, "type": "long_tail", "source": "keyword", "root": None}
+    return {"candidate": False, "type": "attribute_or_scene", "source": "keyword", "root": None}
+
+
+def is_broad_root_candidate(keyword: str, product: dict[str, Any]) -> bool:
+    """Return whether a complete keyword is eligible for broad discovery."""
+
+    metadata = root_candidate_metadata(keyword, product)
+    if not metadata["candidate"]:
+        return False
+    word_count = len(tokens(keyword))
+    if word_count < 1 or word_count > 3:
+        return False
+    _, _, excluded, brand = _profile(product)
+    normalized = normalize_keyword(keyword)
+    return not any(_phrase_in_text(term, normalized) for term in [*excluded, *brand])
+
+
+def rank_broad_root_candidates(
+    rows: list[dict[str, Any]], product: dict[str, Any], *, limit: int = MAX_BROAD_ROOTS
+) -> list[dict[str, Any]]:
+    """Rank already-approved broad roots and enforce the product-level cap.
+
+    Only rows whose current final/manual action is ``broad`` participate.  The
+    helper therefore never promotes an unreviewed or exact long-tail keyword;
+    it only provides deterministic ranking and metadata for reconciliation.
+    """
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        action = clean_text(row.get("manual_action") or row.get("suggested_action_auto")).casefold()
+        if action != "broad":
+            continue
+        keyword = normalize_keyword(row.get("keyword_normalized") or row.get("keyword_raw"))
+        if not keyword or keyword in seen or not is_broad_root_candidate(keyword, product):
+            continue
+        volume = row.get("monthly_search_volume")
+        try:
+            volume_value = int(volume) if volume is not None else -1
+        except (TypeError, ValueError):
+            volume_value = -1
+        coverage, total = _competitor_coverage(row, product)
+        minimum = minimum_competitor_coverage(total) if total else 0
+        if volume_value < MIN_TARGETING_SEARCH_VOLUME or total <= 0 or coverage is None or coverage < minimum:
+            continue
+        try:
+            score = int(row.get("relevance_score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        seen.add(keyword)
+        candidates.append(
+            {
+                "id": int(row["id"]) if row.get("id") is not None else None,
+                "keyword": keyword,
+                "monthly_search_volume": volume_value,
+                "coverage": coverage,
+                "coverage_total": total,
+                "relevance_score": max(0, min(100, score)),
+                "metadata": root_candidate_metadata(keyword, product),
+            }
+        )
+    candidates.sort(key=lambda item: (-item["monthly_search_volume"], -item["coverage"], -item["relevance_score"], item["keyword"]))
+    return [{**item, "rank": index + 1, "over_limit": index >= limit} for index, item in enumerate(candidates)]
 
 
 def analyze_keyword(keyword: str, product: dict[str, Any]) -> Analysis:
@@ -357,6 +486,7 @@ def recommendation_for(
 ) -> dict[str, Any]:
     """Return a draft ad action; this function never performs an ad mutation."""
 
+    root_metadata = root_candidate_metadata(keyword, product)
     basis: list[str] = [f"relevance_score={analysis.score}", f"match_strength={analysis.strength}"]
     if analysis.matched_terms:
         basis.append("matched_terms=" + ",".join(analysis.matched_terms[:8]))
@@ -410,7 +540,7 @@ def recommendation_for(
         reason = "关键词过于宽泛且未包含明确产品锚点；先观察，不直接占用精准投放预算"
     elif _is_exact_core_term(keyword, product) and row.get("monthly_search_volume") is not None and int(row["monthly_search_volume"]) >= MIN_TARGETING_SEARCH_VOLUME:
         # Product-level roots are the only safe broad seeds.  They are still
-        # sent through MiMo; this deterministic candidate makes the intended
+        # sent through the semantic model; this deterministic candidate makes the intended
         # broad-root pool visible even when the model conservatively answers
         # exact for the same phrase.
         action = "broad"
@@ -445,14 +575,21 @@ def recommendation_for(
         label = "观察/暂不投放"
         reason = "弱相关或缺少明确产品匹配；不能仅凭低搜索量或卖家精灵数据自动否定"
 
-    minimum_coverage = minimum_competitor_coverage(coverage_total)
-    low_coverage = coverage_count is not None and coverage_count < minimum_coverage
+    minimum_coverage = minimum_competitor_coverage(coverage_total) if coverage_total else 0
+    low_coverage = coverage_total > 0 and coverage_count is not None and coverage_count < minimum_coverage
     if low_coverage and action in {"exact", "broad"}:
         action = "observe"
         match_type = None
         risk = "medium"
         label = "观察/暂不投放"
         reason = f"竞品覆盖仅 {coverage_count}/{coverage_total}，低于 {minimum_coverage}/{coverage_total}（30%相关性门槛）；先观察，不直接投放"
+
+    if coverage_total <= 0 and action in {"exact", "broad"}:
+        action = "observe"
+        match_type = None
+        risk = "medium"
+        label = "观察/暂不投放"
+        reason = "竞品 ASIN 覆盖数据尚未导入，无法计算相关性占比；先观察，不直接投放"
 
     low_volume = row.get("monthly_search_volume") is not None and int(row["monthly_search_volume"]) < MIN_TARGETING_SEARCH_VOLUME
     if low_volume and action in {"exact", "broad"}:
@@ -488,6 +625,9 @@ def recommendation_for(
                     "data_basis": basis,
                     "missing_data": missing,
                     "negative_impact": {"root": term, "affected_count": len(affected), "affected_keywords": affected[:20], "blocked": False},
+                    "rule_engine_version": RULE_ENGINE_VERSION,
+                    "root_candidate_type": root_metadata["type"],
+                    "root_source": root_metadata["source"],
                 }
 
     if missing and action not in {"negative_exact", "negative_phrase"}:
@@ -503,30 +643,125 @@ def recommendation_for(
         "data_basis": basis,
         "missing_data": missing,
         "negative_impact": {"root": None, "affected_count": 0, "affected_keywords": [], "blocked": False},
+        "rule_engine_version": RULE_ENGINE_VERSION,
+        "root_candidate_type": root_metadata["type"],
+        "root_source": root_metadata["source"],
     }
 
 
 def compute_safe_negative_phrase_terms(
     rows: list[dict[str, Any]], product: dict[str, Any]
 ) -> tuple[set[str], dict[str, list[str]]]:
-    """Find explicitly excluded roots that are safe enough to surface as high-risk drafts.
+    """Keep import-time analysis from emitting phrase negatives.
 
-    This intentionally returns no candidates unless the user supplied an
-    exclusion root, at least two keywords contain it, and no strong/medium
-    keyword contains it.  It is a conservative pre-flight check, not an ad
-    operation.
+    Phrase negatives are product-level decisions that require completed
+    semantic results for every affected expansion.  This compatibility hook
+    remains a no-op because imports must never bypass that second audit.
     """
 
-    _, _, excluded, _ = _profile(product)
-    if not excluded:
-        return set(), {}
-    analyses = [(clean_text(row.get("keyword_normalized") or row.get("keyword_raw")), analyze_keyword(row.get("keyword_normalized") or row.get("keyword_raw"), product)) for row in rows]
-    safe: set[str] = set()
-    conflicts: dict[str, list[str]] = {}
-    for root in excluded:
-        contained = [keyword for keyword, _ in analyses if _phrase_in_text(root, keyword)]
-        meaningful = [keyword for keyword, analysis in analyses if _phrase_in_text(root, keyword) and analysis.strength in {"strong", "medium"}]
-        if len(contained) >= 2 and not meaningful:
-            safe.add(root)
-            conflicts[root] = contained
-    return safe, conflicts
+    return set(), {}
+
+
+def _negative_phrase_roots(keyword: str) -> list[str]:
+    """Return one-word and adjacent two-word roots from a search term."""
+
+    words = tokens(keyword)
+    roots = [word for word in words if word not in _NEGATIVE_PHRASE_STOPWORDS and not word.isdigit()]
+    roots.extend(
+        f"{words[index]} {words[index + 1]}"
+        for index in range(len(words) - 1)
+        if words[index] not in _NEGATIVE_PHRASE_STOPWORDS
+        and words[index + 1] not in _NEGATIVE_PHRASE_STOPWORDS
+        and not words[index].isdigit()
+        and not words[index + 1].isdigit()
+    )
+    return list(dict.fromkeys(roots))
+
+
+def _negative_phrase_protected_roots(product: dict[str, Any]) -> set[str]:
+    protected = set(_NEGATIVE_PHRASE_PROTECTED_ROOTS)
+    protected.update(tokens(" ".join(_product_core_terms(product))))
+    protected.update(tokens(" ".join(_configured_terms(product, "protected_terms"))))
+    return protected
+
+
+def derive_negative_phrase_candidates(
+    rows: list[dict[str, Any]], product: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """Derive safe phrase-negative drafts after all exact decisions are saved.
+
+    A root must occur in at least two reviewed ``negative_exact`` rows, every
+    affected row must be reviewed, and no positive or medium/high-relevance
+    expansion may contain it.  Both one- and two-word roots are considered,
+    but generic/protected roots (``room``, ``home``, ``decor``, product roots,
+    etc.) are always blocked.  The function is pure and never mutates SQLite.
+    """
+
+    normalized_rows: list[dict[str, Any]] = []
+    for raw in rows:
+        keyword = normalize_keyword(raw.get("keyword_normalized") or raw.get("keyword_raw"))
+        if not keyword:
+            continue
+        action = clean_text(raw.get("manual_action") or raw.get("suggested_action_auto")).casefold()
+        try:
+            score = int(raw.get("relevance_score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        normalized_rows.append(
+            {
+                "raw": raw,
+                "keyword": keyword,
+                "action": action,
+                "score": max(0, min(100, score)),
+                "reviewed": bool(raw.get("semantic_reviewed")),
+                "local_score": analyze_keyword(keyword, product).score,
+            }
+        )
+
+    seeds = [item for item in normalized_rows if item["action"] == "negative_exact" and item["reviewed"]]
+    if not seeds:
+        return {}
+    protected_roots = _negative_phrase_protected_roots(product)
+    root_seed_counts = Counter(root for seed in seeds for root in _negative_phrase_roots(seed["keyword"]))
+    candidates: dict[str, dict[str, Any]] = {}
+    for root, seed_count in root_seed_counts.items():
+        root_words = root.split()
+        # A repeated generic/product root can still be a valid negative exact,
+        # but it is never safe to broaden that decision to phrase matching.
+        blocked_root = (len(root_words) == 1 and root in protected_roots) or root in _NEGATIVE_PHRASE_PROTECTED_PAIRS
+        blocked_root = blocked_root or root in _product_core_terms(product)
+        if seed_count < NEGATIVE_PHRASE_MIN_SEEDS or blocked_root:
+            continue
+        affected = [item for item in normalized_rows if _phrase_in_text(root, item["keyword"])]
+        if len(affected) < NEGATIVE_PHRASE_MIN_AFFECTED or any(not item["reviewed"] for item in affected):
+            continue
+
+        protected: list[str] = []
+        for item in affected:
+            if item["action"] != "negative_exact" and (
+                item["action"] in {"exact", "broad"}
+                or item["score"] >= 50
+                or (item["local_score"] >= 50 and _has_product_anchor(item["keyword"], product))
+            ):
+                protected.append(item["keyword"])
+        if protected:
+            continue
+
+        negative_seeds = [item for item in affected if item["action"] == "negative_exact"]
+        if len(negative_seeds) < NEGATIVE_PHRASE_MIN_SEEDS:
+            continue
+        representative = min(
+            negative_seeds,
+            key=lambda item: (item["keyword"] != root, len(tokens(item["keyword"])), item["keyword"]),
+        )
+        candidates[root] = {
+            "root": root,
+            "root_length": len(root_words),
+            "seed_count": seed_count,
+            "seed_keywords": [item["keyword"] for item in negative_seeds],
+            "affected_count": len(affected),
+            "affected_keywords": [item["keyword"] for item in affected],
+            "protected_keywords": protected,
+            "representative_id": int(representative["raw"]["id"]),
+        }
+    return candidates

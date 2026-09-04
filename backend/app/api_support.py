@@ -107,12 +107,19 @@ def keyword_response(row: Any, connection: Any | None = None) -> dict[str, Any]:
         "classification_reason_json",
         "advice_data_basis_json",
         "manual_tags_json",
+        "conflict_actions_json",
+        "protected_terms_json",
+        "negative_phrase_evidence_json",
     ):
         output_key = key.removesuffix("_json")
         data[output_key] = loads(data.pop(key, "[]"), [])
     data["raw_data"] = loads(data.pop("raw_data_json", "{}"), {})
     data["data_quality_flags"] = loads(data.pop("data_quality_flags_json", "[]"), [])
     data["negative_impact"] = loads(data.pop("negative_impact_json", "{}"), {})
+    data["negative_phrase_evidence"] = loads(data.pop("negative_phrase_evidence_json", "{}"), {})
+    data["conflict_actions"] = loads(data.pop("conflict_actions_json", "[]"), [])
+    data["protected_terms"] = loads(data.pop("protected_terms_json", "[]"), [])
+    data["negative_phrase_root"] = data["negative_impact"].get("root") if isinstance(data["negative_impact"], dict) else None
     data["manual_locked"] = bool(data.get("manual_locked"))
     data["category"] = data.get("manual_category") or data.get("category_auto")
     data["match_strength"] = data.get("manual_match_strength") or data.get("match_strength_auto")
@@ -120,6 +127,9 @@ def keyword_response(row: Any, connection: Any | None = None) -> dict[str, Any]:
     action = data.get("manual_action") or data.get("suggested_action_auto")
     data["suggested_action"] = action
     data["suggested_action_label"] = ACTION_LABELS.get(action, action)
+    if not data["conflict_actions"] and data.get("manual_action") and data.get("suggested_action_auto") and data["manual_action"] != data["suggested_action_auto"]:
+        data["conflict_actions"] = [data["suggested_action_auto"], data["manual_action"]]
+    data["has_action_conflict"] = len(set(data["conflict_actions"])) > 1
     data["suggested_match_type_resolved"] = data.get("manual_action") or data.get("suggested_match_type")
     source_rows = []
     if connection is not None:
@@ -140,13 +150,19 @@ def keyword_response(row: Any, connection: Any | None = None) -> dict[str, Any]:
         competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (data["product_id"],)).fetchone()[0])
     data["competitor_total"] = max(0, competitor_total)
     action = data.get("suggested_action")
-    if not data["manual_locked"] and not data.get("manual_action") and action in {"exact", "broad"} and data["competitor_total"]:
-        minimum = minimum_competitor_coverage(data["competitor_total"])
-        if data["competitor_coverage"] < minimum:
+    if not data["manual_locked"] and not data.get("manual_action") and action in {"exact", "broad"}:
+        if not data["competitor_total"]:
             data["suggested_action"] = "observe"
             data["suggested_action_label"] = ACTION_LABELS["observe"]
             data["suggested_match_type_resolved"] = "observe"
-            data["advice_reason"] = f"竞品覆盖仅 {data['competitor_coverage']}/{data['competitor_total']}，低于 {minimum}/{data['competitor_total']}（30%相关性门槛）；先观察，不直接投放"
+            data["advice_reason"] = "竞品 ASIN 覆盖数据尚未导入，无法计算相关性占比；先观察，不直接投放"
+        else:
+            minimum = minimum_competitor_coverage(data["competitor_total"])
+            if data["competitor_coverage"] < minimum:
+                data["suggested_action"] = "observe"
+                data["suggested_action_label"] = ACTION_LABELS["observe"]
+                data["suggested_match_type_resolved"] = "observe"
+                data["advice_reason"] = f"竞品覆盖仅 {data['competitor_coverage']}/{data['competitor_total']}，低于 {minimum}/{data['competitor_total']}（30%相关性门槛）；先观察，不直接投放"
     return data
 
 
@@ -232,10 +248,11 @@ def keyword_update_parts(values: dict[str, Any]) -> tuple[list[str], list[Any]]:
     category = values.get("manual_category", values.get("category"))
     strength = values.get("manual_match_strength", values.get("match_strength"))
     status = values.get("manual_status", values.get("status"))
+    action_supplied = "manual_action" in values or "action" in values
     action = values.get("manual_action", values.get("action"))
     tags = values.get("manual_tags", values.get("tags"))
     lock_value = values.get("manual_locked", values.get("locked"))
-    if action is not None and action not in ALLOWED_ACTIONS:
+    if action_supplied and action is not None and action not in ALLOWED_ACTIONS:
         api_error(422, "invalid_action", "不支持的广告动作")
     if status is not None and status not in ALLOWED_KEYWORD_STATUSES:
         api_error(422, "invalid_keyword_status", "不支持的关键词状态")
@@ -252,9 +269,9 @@ def keyword_update_parts(values: dict[str, Any]) -> tuple[list[str], list[Any]]:
     if status is not None:
         assignments.append("manual_status = ?")
         params.append(status)
-    if action is not None:
+    if action_supplied:
         assignments.append("manual_action = ?")
-        params.append(action)
+        params.append(clean_text(action) or None)
     if tags is not None:
         assignments.append("manual_tags_json = ?")
         params.append(dumps(tags))
