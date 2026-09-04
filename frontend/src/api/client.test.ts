@@ -162,4 +162,40 @@ describe('API client', () => {
 
     await expect(api.getAIConfig()).rejects.toThrow('API 503: Service Unavailable')
   })
+
+  it('archives a product through the explicit delete endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 7, status: 'archived' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.archiveProduct('product/7')
+
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/products/product%2F7`, expect.objectContaining({ method: 'DELETE' }))
+  })
+
+  it('persists manual keyword decisions through the backend patch endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      id: 7,
+      keyword_raw: 'room decor',
+      keyword_normalized: 'room decor',
+      suggested_action: 'negative_exact',
+      suggested_action_auto: 'negative_exact',
+      manual_action: null,
+      manual_locked: false,
+      competitor_coverage: 3,
+      competitor_total: 20,
+      related_asins: [],
+      traffic_types: [],
+      advice_confidence: 0.9,
+      advice_risk_level: 'high',
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await api.updateKeyword('product-1', '7', { action: null, locked: false, notes: '驳回后保留自动建议' })
+
+    expect(result.suggestedAction).toBe('否定精准')
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/products/product-1/keywords/7`, expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ action: null, locked: false, notes: '驳回后保留自动建议' }),
+    }))
+  })
 })

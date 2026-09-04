@@ -23,7 +23,7 @@ from .db import read_connection
 from .utils import clean_text, loads, tokens
 
 
-SEMANTIC_REVIEW_VERSION = "mimo-double-audit-v2"
+SEMANTIC_REVIEW_VERSION = "ad-rules-v2-semantic-v1"
 SEMANTIC_REVIEW_RETRIES = 3
 SemanticRequester = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
@@ -140,7 +140,7 @@ def semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candi
         "messages": [
             {
                 "role": "system",
-                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
+                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase from one keyword: phrase negatives are derived only after all negative-exact seeds and their affected expansions have been audited. A query below the supplied monthly-volume or competitor-coverage gate must be observe unless it is an explicit complete-query mismatch. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
             },
             {
                 "role": "user",
@@ -149,7 +149,8 @@ def semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candi
                         "product_title": product.get("product_title"),
                         "bullet_points": product.get("bullet_points", []),
                         "core_terms": product.get("core_terms", []),
-                        "task": "Double-audit every candidate using the product copy plus the local rule evidence. Relevant long-tail terms must be exact targeting. Broad is allowed only for an exact core term. Return {reviews:[{id,decision,relevance_score,confidence,reason_zh,negative_phrase_root?}]}. Scores are 0-100. Do not omit any candidate id.",
+                        "protected_terms": product.get("settings", {}).get("protected_terms", []) if isinstance(product.get("settings"), dict) else [],
+                        "task": "Double-audit every candidate using the product copy plus local rule evidence. Relevant long-tail terms must be exact targeting only when the candidate clears both hard gates. Broad is allowed only for a complete product-level root; all other broad answers are downgraded by the application. A complete incompatible query may be negative_exact; do not broaden it to a phrase root. Return {reviews:[{id,decision,relevance_score,confidence,reason_zh}]}. Scores are 0-100. Do not omit or duplicate any candidate id.",
                         "candidates": candidates,
                     },
                     ensure_ascii=False,
@@ -210,7 +211,7 @@ def run_semantic_batch(
             last_error = semantic_batch_error(error)
             if attempt + 1 < attempts:
                 time.sleep(0.35 * (2 ** attempt))
-    return {}, last_error or "MiMo 批次审核失败"
+    return {}, last_error or "AI 语义审核批次失败"
 
 
 def run_semantic_batches(
@@ -228,7 +229,7 @@ def run_semantic_batches(
         return {}, 0
     worker_count = min(max(1, concurrency), len(batch_specs))
     batch_results: dict[int, tuple[dict[int, dict[str, Any]], str | None]] = {}
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mimo-review") as executor:
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ai-review") as executor:
         futures = {
             executor.submit(
                 run_semantic_batch,

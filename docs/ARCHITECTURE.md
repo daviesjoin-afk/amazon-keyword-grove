@@ -57,7 +57,7 @@ flowchart LR
 2. 导入 SellerSprite `.xlsx` / `.xlsm` / `.csv`；
 3. 导入器动态匹配字段并保留必要原始值；
 4. 规则引擎给出相关度和安全优先的广告建议；
-5. 可选 MiMo/OpenAI-compatible 语义审核补充理由和置信度；
+5. 可选 AI/OpenAI-compatible 语义审核补充理由和置信度；
 6. 人工审阅、锁定或修改建议；
 7. 导出 CSV 供后续人工操作。
 

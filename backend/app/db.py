@@ -150,6 +150,17 @@ CREATE TABLE IF NOT EXISTS keywords (
     semantic_reviewed INTEGER NOT NULL DEFAULT 0,
     semantic_reviewed_at TEXT,
     semantic_review_signature TEXT,
+    rule_engine_version TEXT NOT NULL DEFAULT 'ad-rules-v1',
+    rule_action_before_semantic TEXT,
+    final_action_source TEXT,
+    root_candidate_type TEXT,
+    root_source TEXT,
+    protected_terms_json TEXT NOT NULL DEFAULT '[]',
+    conflict_actions_json TEXT NOT NULL DEFAULT '[]',
+    negative_phrase_eligible INTEGER NOT NULL DEFAULT 0,
+    negative_phrase_evidence_json TEXT NOT NULL DEFAULT '{}',
+    broad_root_rank INTEGER,
+    broad_root_candidate INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
@@ -239,13 +250,27 @@ def init_db() -> None:
             ("semantic_reviewed", "INTEGER NOT NULL DEFAULT 0"),
             ("semantic_reviewed_at", "TEXT"),
             ("semantic_review_signature", "TEXT"),
+            ("rule_engine_version", "TEXT NOT NULL DEFAULT 'ad-rules-v1'"),
+            ("rule_action_before_semantic", "TEXT"),
+            ("final_action_source", "TEXT"),
+            ("root_candidate_type", "TEXT"),
+            ("root_source", "TEXT"),
+            ("protected_terms_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("conflict_actions_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("negative_phrase_eligible", "INTEGER NOT NULL DEFAULT 0"),
+            ("negative_phrase_evidence_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("broad_root_rank", "INTEGER"),
+            ("broad_root_candidate", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in columns:
                 connection.execute(f"ALTER TABLE keywords ADD COLUMN {name} {definition}")
+        # Rows imported before the v2 rule metadata existed remain explicitly
+        # identifiable as v1; they are not silently presented as v2 results.
+        connection.execute("UPDATE keywords SET rule_engine_version = 'ad-rules-v1' WHERE rule_engine_version IS NULL OR rule_engine_version = ''")
         # Preserve audits created before the explicit status columns existed.
         # The reason prefix was the previous durable marker and is safe to
         # backfill once during migration.
-        connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = COALESCE(semantic_reviewed_at, updated_at) WHERE semantic_reviewed = 0 AND advice_reason LIKE 'MiMo 语义审核：%'")
+        connection.execute("UPDATE keywords SET semantic_reviewed = 1, semantic_reviewed_at = COALESCE(semantic_reviewed_at, updated_at) WHERE semantic_reviewed = 0 AND advice_reason LIKE '%语义审核：%'")
         # Product workspaces created before import-status persistence could
         # remain in ``preparing`` forever even though they already contain a
         # keyword library.  Resolve only those legacy rows; empty new products

@@ -21,7 +21,7 @@ interface WorkbenchProps {
   onUpdateKeywords: (ids: string[], patch: Partial<KeywordRecord>) => void
   onSaveProduct: (payload: ProductCopyPayload) => Promise<void>
   onExport: () => void
-  onSemanticReview: () => Promise<void>
+  onSemanticReview: (mode?: 'incremental' | 'full') => Promise<void>
   semanticReviewing: boolean
   reviewProgress: SemanticReviewStatus | null
 }
@@ -32,16 +32,16 @@ export function Workbench({ product, keywords, batches, onOpenImport, onSelectKe
   const hasKeywords = product.keywordTotal > 0 || keywords.length > 0
   const reviewButtonLabel = semanticReviewing && reviewProgress
     ? text(
-        `MiMo 审核中 ${reviewProgress.reviewed.toLocaleString(numberLocale)} / ${reviewProgress.total.toLocaleString(numberLocale)}`,
-        `MiMo reviewing ${reviewProgress.reviewed.toLocaleString(numberLocale)} / ${reviewProgress.total.toLocaleString(numberLocale)}`,
+        `${reviewProgress.review_mode === 'full' ? 'AI 重新审核中' : 'AI 增量审核中'} ${reviewProgress.reviewed.toLocaleString(numberLocale)} / ${reviewProgress.total.toLocaleString(numberLocale)}`,
+        `${reviewProgress.review_mode === 'full' ? 'AI re-reviewing' : 'AI reviewing'} ${reviewProgress.reviewed.toLocaleString(numberLocale)} / ${reviewProgress.total.toLocaleString(numberLocale)}`,
       )
-    : hasKeywords ? text('MiMo 全量审核', 'Run MiMo review') : text('暂无关键词', 'No keywords')
+    : hasKeywords ? text('AI 增量审核', 'Run AI review') : text('暂无关键词', 'No keywords')
   const reviewButtonTitle = hasKeywords
     ? text(
-        '发送当前产品资料与全部关键词到 MiMo，分批生成投放和否词草稿；人工锁定结果只记录审核不覆盖',
-        'Send the current product context and keywords to MiMo in bounded batches. Manual locks are reviewed but never overwritten.',
+        '只处理尚未完成语义审核的关键词；已审核结果会保留，人工锁定结果不会被覆盖',
+        'Review only keywords without a completed semantic result. Completed results and manual locks are preserved.',
       )
-    : text('请先导入关键词表，再进行 MiMo 语义审核', 'Import a keyword sheet before running MiMo semantic review')
+    : text('请先导入关键词表，再进行 AI 语义审核', 'Import a keyword sheet before running AI semantic review')
 
   return <div className="workbench-page">
     <div className="workbench-head">
@@ -56,7 +56,8 @@ export function Workbench({ product, keywords, batches, onOpenImport, onSelectKe
         </div>
       </div>
       <div className="workbench-actions">
-        <button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={reviewButtonTitle} onClick={() => void onSemanticReview()}><BrainCircuit size={15} />{reviewButtonLabel}</button>
+        <button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={reviewButtonTitle} onClick={() => void onSemanticReview('incremental')}><BrainCircuit size={15} />{reviewButtonLabel}</button>
+        <button className="button button-secondary compact-button" type="button" disabled={semanticReviewing || !hasKeywords} title={text('重新审核所有未人工锁定的关键词，会产生新的模型调用；人工锁定结果保持不变', 'Re-review all keywords except manual locks; this creates new model calls while preserving manual decisions')} onClick={() => void onSemanticReview('full')}><BrainCircuit size={15} />{text('重新审核', 'Re-review')}</button>
         <button className="button button-secondary compact-button" type="button" onClick={onExport}><Download size={15} />{text('导出', 'Export')}</button>
         <button className="button button-primary compact-button" type="button" onClick={onOpenImport}><Upload size={15} />{text('导入新批次', 'Import batch')}</button>
       </div>

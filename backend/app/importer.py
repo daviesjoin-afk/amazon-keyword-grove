@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .analyzer import analyze_keyword, compute_safe_negative_phrase_terms, recommendation_for
+from .analyzer import RULE_ENGINE_VERSION, _negative_phrase_protected_roots, analyze_keyword, compute_safe_negative_phrase_terms, rank_broad_root_candidates, recommendation_for, root_candidate_metadata
 from .db import transaction
 from .utils import (
     as_currency,
@@ -115,6 +115,18 @@ DB_FIELDS = (
     "raw_data_json",
     "data_quality_flags_json",
 )
+
+
+def _semantic_evidence_changed(existing: Any, values: dict[str, Any]) -> bool:
+    """Return whether a re-import changed evidence used by semantic review.
+
+    Semantic results are intentionally durable across an identical workbook
+    re-import.  When a Seller Sprite metric or source payload changes, the
+    previous model decision is no longer guaranteed to describe the row and
+    must be sent through the incremental review queue again.
+    """
+
+    return any(existing[field] != values.get(field) for field in DB_FIELDS)
 
 
 @dataclass
@@ -360,6 +372,7 @@ def _snapshot(metric: dict[str, Any]) -> str:
 def _analysis_fields(keyword: str, product: dict[str, Any], metric: dict[str, Any], *, safe_terms: set[str] | None = None, negative_conflicts: dict[str, list[str]] | None = None) -> dict[str, Any]:
     analysis = analyze_keyword(keyword, product)
     advice = recommendation_for(keyword, analysis, metric, product, safe_negative_phrase_terms=safe_terms, negative_phrase_conflicts=negative_conflicts)
+    root_metadata = root_candidate_metadata(keyword, product)
     return {
         "category_auto": analysis.category,
         "category_confidence": analysis.category_confidence,
@@ -375,6 +388,17 @@ def _analysis_fields(keyword: str, product: dict[str, Any], metric: dict[str, An
         "advice_risk_level": advice["risk_level"],
         "advice_data_basis_json": dumps(advice["data_basis"] + (["missing=" + ",".join(advice["missing_data"])] if advice["missing_data"] else [])),
         "negative_impact_json": dumps(advice["negative_impact"]),
+        "rule_engine_version": RULE_ENGINE_VERSION,
+        "rule_action_before_semantic": advice["action"],
+        "final_action_source": "rule",
+        "root_candidate_type": root_metadata["type"],
+        "root_source": root_metadata["source"],
+        "protected_terms_json": dumps(sorted(_negative_phrase_protected_roots(product))),
+        "conflict_actions_json": dumps([]),
+        "negative_phrase_eligible": 0,
+        "negative_phrase_evidence_json": dumps({}),
+        "broad_root_rank": None,
+        "broad_root_candidate": 1 if advice["action"] == "broad" and root_metadata["candidate"] else 0,
     }
 
 
@@ -406,22 +430,70 @@ def _upsert_keyword_source(connection: Any, keyword_id: int, product_id: int, as
 def _update_automatic_analysis(connection: Any, product_id: int, product: dict[str, Any]) -> None:
     rows = [dict(row) for row in connection.execute("SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchall()]
     competitor_total = int(connection.execute("SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'", (product_id,)).fetchone()[0])
+    product_with_coverage = {**product, "competitor_total": competitor_total}
     safe_terms, conflicts = compute_safe_negative_phrase_terms(rows, product)
     for row in rows:
+        if row.get("manual_locked"):
+            # Manual lock is an explicit rollback boundary: refresh metrics and
+            # source history, but never rewrite the saved rule/semantic draft
+            # or its evidence fields.
+            continue
         metric = {**row, "competitor_total": competitor_total}
-        fields = _analysis_fields(row["keyword_raw"], product, metric, safe_terms=safe_terms, negative_conflicts=conflicts)
+        fields = _analysis_fields(row["keyword_raw"], product_with_coverage, metric, safe_terms=safe_terms, negative_conflicts=conflicts)
         connection.execute(
             """UPDATE keywords SET category_auto = ?, category_confidence = ?, classification_reason_json = ?,
                relevance_score = ?, match_strength_auto = ?, matched_terms_json = ?, conflicting_terms_json = ?,
                suggested_action_auto = ?, suggested_match_type = ?, advice_reason = ?, advice_confidence = ?,
-               advice_risk_level = ?, advice_data_basis_json = ?, negative_impact_json = ?, updated_at = ? WHERE id = ?""",
+               advice_risk_level = ?, advice_data_basis_json = ?, negative_impact_json = ?, rule_engine_version = ?,
+               rule_action_before_semantic = ?, final_action_source = ?, root_candidate_type = ?, root_source = ?,
+               protected_terms_json = ?, conflict_actions_json = ?, negative_phrase_eligible = ?, negative_phrase_evidence_json = ?,
+               broad_root_rank = ?, broad_root_candidate = ?, updated_at = ? WHERE id = ?""",
             (
                 fields["category_auto"], fields["category_confidence"], fields["classification_reason_json"], fields["relevance_score"],
                 fields["match_strength_auto"], fields["matched_terms_json"], fields["conflicting_terms_json"], fields["suggested_action_auto"],
                 fields["suggested_match_type"], fields["advice_reason"], fields["advice_confidence"], fields["advice_risk_level"],
-                fields["advice_data_basis_json"], fields["negative_impact_json"], now_iso(), row["id"],
+                fields["advice_data_basis_json"], fields["negative_impact_json"], fields["rule_engine_version"],
+                fields["rule_action_before_semantic"], fields["final_action_source"], fields["root_candidate_type"], fields["root_source"],
+                fields["protected_terms_json"], fields["conflict_actions_json"], fields["negative_phrase_eligible"], fields["negative_phrase_evidence_json"],
+                fields["broad_root_rank"], fields["broad_root_candidate"], now_iso(), row["id"],
             ),
         )
+    _reconcile_broad_root_actions(connection, product_id, product_with_coverage)
+
+
+def _reconcile_broad_root_actions(connection: Any, product_id: int, product: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep broad discovery terms within the product-level ten-term cap."""
+
+    rows = [dict(row) for row in connection.execute("SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL", (product_id,)).fetchall()]
+    ranked = rank_broad_root_candidates(rows, product)
+    by_id = {item["id"]: item for item in ranked if item.get("id") is not None}
+    selected = {item["id"] for item in ranked if item["rank"] <= 10}
+    timestamp = now_iso()
+    for row in rows:
+        if row.get("suggested_action_auto") != "broad":
+            continue
+        item = by_id.get(int(row["id"]))
+        if item is None:
+            continue
+        # Manual decisions always win.  The rank remains visible for audit,
+        # but a locked/manual broad term is never silently demoted.
+        if row.get("manual_locked") or row.get("manual_action"):
+            connection.execute("UPDATE keywords SET broad_root_rank = ?, broad_root_candidate = 1, updated_at = ? WHERE id = ?", (item["rank"], timestamp, row["id"]))
+            continue
+        if int(row["id"]) in selected:
+            connection.execute("UPDATE keywords SET broad_root_rank = ?, broad_root_candidate = 1, updated_at = ? WHERE id = ?", (item["rank"], timestamp, row["id"]))
+        else:
+            reason = clean_text(row.get("advice_reason"))
+            suffix = "；广泛词根超过本产品 10 条上限，保留为候选但暂不进入导出"
+            if suffix not in reason:
+                reason = (reason + suffix)[:600]
+            connection.execute(
+                """UPDATE keywords SET suggested_action_auto = 'observe', suggested_match_type = NULL,
+                   advice_reason = ?, advice_risk_level = 'medium', broad_root_rank = ?, broad_root_candidate = 1,
+                   final_action_source = 'rule_gate', updated_at = ? WHERE id = ?""",
+                (reason, item["rank"], timestamp, row["id"]),
+            )
+    return ranked
 
 
 def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkbook, product_row: Any) -> dict[str, Any]:
@@ -433,12 +505,19 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
     row_errors: list[dict[str, Any]] = []
     try:
         with transaction() as connection:
+            previous_competitor_total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'",
+                    (product_id,),
+                ).fetchone()[0]
+            )
             cursor = connection.execute(
                 """INSERT INTO imports(product_id, filename, file_sha256, sheet_name, status, total_rows,
                    unmapped_headers_json, source_asins_json, mapping_json, created_at) VALUES (?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?)""",
                 (product_id, filename, parsed.file_sha256, parsed.sheet_name, len(parsed.rows), dumps(parsed.unmapped_headers), dumps(parsed.source_asins), dumps(parsed.mapping), timestamp),
             )
             import_id = int(cursor.lastrowid)
+            semantic_recheck_ids: set[int] = set()
             for asin in parsed.source_asins:
                 _upsert_source_asin(connection, product_id, asin, import_id, timestamp)
 
@@ -453,7 +532,7 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                 # denominator for the relevance ratio during first-pass rules.
                 metric["competitor_total"] = len(parsed.source_asins)
                 analysis = _analysis_fields(keyword_raw, product, metric)
-                existing = connection.execute("SELECT id, manual_locked FROM keywords WHERE product_id = ? AND site = ? AND keyword_normalized = ?", (product_id, product.get("site") or "US", normalized)).fetchone()
+                existing = connection.execute("SELECT * FROM keywords WHERE product_id = ? AND site = ? AND keyword_normalized = ?", (product_id, product.get("site") or "US", normalized)).fetchone()
                 values = {
                     "product_id": product_id,
                     "site": product.get("site") or "US",
@@ -464,6 +543,8 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                 }
                 if existing:
                     keyword_id = int(existing["id"])
+                    if not existing["manual_locked"] and _semantic_evidence_changed(existing, values):
+                        semantic_recheck_ids.add(keyword_id)
                     assignments = ["keyword_raw = ?", "keyword_translation = ?", *[f"{field} = ?" for field in DB_FIELDS if field != "keyword_translation"],
                                    "last_seen_at = ?", "last_import_id = ?", "updated_at = ?"]
                     params = [values["keyword_raw"], values["keyword_translation"]]
@@ -488,6 +569,33 @@ def import_parsed_workbook(product_id: int, filename: str, parsed: ParsedWorkboo
                         _upsert_source_asin(connection, product_id, asin, import_id, timestamp)
 
             _update_automatic_analysis(connection, product_id, product)
+            competitor_total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM product_asins WHERE product_id = ? AND role = 'competitor'",
+                    (product_id,),
+                ).fetchone()[0]
+            )
+            if competitor_total != previous_competitor_total:
+                # A changed denominator changes every coverage ratio, so all
+                # unlocked rows require a fresh semantic pass. Manual rows
+                # remain an explicit user-controlled rollback boundary.
+                connection.execute(
+                    """UPDATE keywords
+                       SET semantic_reviewed = 0, semantic_reviewed_at = NULL,
+                           semantic_review_signature = NULL, updated_at = ?
+                       WHERE product_id = ? AND deleted_at IS NULL AND manual_locked = 0""",
+                    (now_iso(), product_id),
+                )
+            elif semantic_recheck_ids:
+                placeholders = ", ".join("?" for _ in semantic_recheck_ids)
+                connection.execute(
+                    f"""UPDATE keywords
+                        SET semantic_reviewed = 0, semantic_reviewed_at = NULL,
+                            semantic_review_signature = NULL, updated_at = ?
+                        WHERE product_id = ? AND deleted_at IS NULL AND manual_locked = 0
+                          AND id IN ({placeholders})""",
+                    (now_iso(), product_id, *sorted(semantic_recheck_ids)),
+                )
             # A product is created in ``preparing`` state because its keyword
             # workbook is optional at first.  Move it to active only after a
             # valid import actually contributes keyword rows; an empty or

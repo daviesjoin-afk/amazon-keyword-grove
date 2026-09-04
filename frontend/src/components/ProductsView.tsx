@@ -1,16 +1,18 @@
-import { Archive, ArrowUpRight, Boxes, CheckCircle2, MoreHorizontal, Plus, Search, Upload } from 'lucide-react'
+import { Archive, ArrowUpRight, Boxes, CheckCircle2, MoreHorizontal, Plus, Search, Trash2, Upload } from 'lucide-react'
 import { useState } from 'react'
 import type { Product, ProductPayload } from '../types'
 import { useI18n } from '../i18n'
 
 interface ProductsViewProps {
   products: Product[]
+  selectedProductId?: string | null
   onOpen: (product: Product) => void
+  onDelete: (product: Product) => void | Promise<void>
   onImport: () => void
   onCreate: (payload: ProductPayload) => void
 }
 
-export function ProductsView({ products, onOpen, onImport, onCreate }: ProductsViewProps) {
+export function ProductsView({ products, selectedProductId, onOpen, onDelete, onImport, onCreate }: ProductsViewProps) {
   const { text, numberLocale } = useI18n()
   const [query, setQuery] = useState('')
   const [showCreate, setShowCreate] = useState(false)
@@ -41,16 +43,21 @@ export function ProductsView({ products, onOpen, onImport, onCreate }: ProductsV
       <span className="products-count">{filtered.length} / {products.length} {text('个产品', 'products')}</span>
     </div>
     <div className="product-grid">
-      {filtered.map((product) => <ProductCard key={product.id} product={product} onOpen={() => onOpen(product)} />)}
+      {filtered.map((product) => <ProductCard key={product.id} product={product} isSelected={product.id === selectedProductId} onOpen={() => onOpen(product)} onDelete={() => onDelete(product)} />)}
       <button className="new-product-card" type="button" onClick={() => setShowCreate(true)}><span><Plus size={20} /></span><strong>{text('建立下一个产品词库', 'Create another product library')}</strong><small>{text('录入标题和五点后即可导入竞品反查表', 'Add title and bullets, then import competitor reverse-ASIN sheets')}</small></button>
     </div>
     {showCreate && <CreateProductModal onClose={() => setShowCreate(false)} onCreate={(payload) => { onCreate(payload); setShowCreate(false) }} />}
   </div>
 }
 
-function ProductCard({ product, onOpen }: { product: Product; onOpen: () => void }) {
+function ProductCard({ product, isSelected, onOpen, onDelete }: { product: Product; isSelected: boolean; onOpen: () => void; onDelete: () => void | Promise<void> }) {
   const { text, numberLocale } = useI18n()
-  return <article className="product-card"><button className="product-card-main" type="button" onClick={onOpen}><div className="product-card-top"><span className="product-card-icon"><Boxes size={20} /></span><span className="product-status"><i />{product.status}</span><MoreHorizontal size={16} className="product-more" /></div><h2>{product.name}</h2><p>{product.category}</p><div className="product-reference"><span>{text('竞品参考', 'Competitor reference')}</span><code>{product.referenceAsin}</code><small>{product.site}</small></div><div className="product-card-metrics"><span><strong>{product.keywordTotal.toLocaleString(numberLocale)}</strong><small>{text('关键词', 'keywords')}</small></span><span><strong>{product.strongCount.toLocaleString(numberLocale)}</strong><small>{text('强匹配', 'strong match')}</small></span><span><strong>{product.sourceCount}</strong><small>{text('来源 ASIN', 'source ASINs')}</small></span></div><div className="product-card-footer"><span>{text(`最近导入 ${product.lastImportedAt}`, `Last import ${product.lastImportedAt}`)}</span><ArrowUpRight size={15} /></div></button></article>
+  const [menuOpen, setMenuOpen] = useState(false)
+  function handleDelete() {
+    setMenuOpen(false)
+    void onDelete()
+  }
+  return <article className={`product-card${isSelected ? ' is-current' : ''}`}><button className="product-card-main" type="button" onClick={onOpen} aria-current={isSelected ? 'true' : undefined}><div className="product-card-top"><span className="product-card-icon"><Boxes size={20} /></span><span className="product-status"><i />{product.status}</span></div><h2>{product.name}</h2><p>{product.category}</p><div className="product-reference"><span>{text('竞品参考', 'Competitor reference')}</span><code>{product.referenceAsin}</code><small>{product.site}</small></div><div className="product-card-metrics"><span><strong>{product.keywordTotal.toLocaleString(numberLocale)}</strong><small>{text('关键词', 'keywords')}</small></span><span><strong>{product.strongCount.toLocaleString(numberLocale)}</strong><small>{text('强匹配', 'strong match')}</small></span><span><strong>{product.sourceCount}</strong><small>{text('来源 ASIN', 'source ASINs')}</small></span></div><div className="product-card-footer"><span>{text(`最近导入 ${product.lastImportedAt}`, `Last import ${product.lastImportedAt}`)}</span><ArrowUpRight size={15} /></div></button><div className="product-card-actions"><button className="product-more-button" type="button" aria-label={text(`打开${product.name}操作菜单`, `Open actions for ${product.name}`)} aria-expanded={menuOpen} title={text('更多操作', 'More actions')} onClick={(event) => { event.stopPropagation(); setMenuOpen((open) => !open) }}><MoreHorizontal size={18} /></button>{menuOpen && <div className="product-action-menu" role="menu"><button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpen() }}><ArrowUpRight size={15} />{text('打开产品', 'Open product')}</button><button className="is-danger" type="button" role="menuitem" onClick={handleDelete}><Trash2 size={15} />{text('删除产品', 'Delete product')}</button></div>}</div></article>
 }
 
 function CreateProductModal({ onClose, onCreate }: { onClose: () => void; onCreate: (payload: ProductPayload) => void }) {

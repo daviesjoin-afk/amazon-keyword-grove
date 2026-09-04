@@ -13,6 +13,14 @@
 ### Changed
 
 - Reviewer-facing repository documentation now presents project purpose, safety boundaries, verification evidence, architecture, and a suggested code-review path in English before deeper business details.
+- Advertising recommendations now use the v2 rule engine: monthly search volume is the primary queue order, competitor coverage is the relevance denominator, broad output is limited to product roots, and negative-phrase candidates are derived from protected multi-word roots.
+- Full and incremental semantic review now preserve completed/manual decisions, expose resumable batch progress, and keep failed work retryable without duplicating completed calls.
+
+### Fixed
+
+- Low-relevance, low-coverage, low-volume, and overly broad queries are excluded from exact targeting and downgraded to review instead of becoming spend-ready recommendations.
+- Product-center cards now expose an independent actions menu with open/archive-delete operations; the current product is visually marked and remains selected after refresh or deletion.
+- Manual keyword actions and review evidence remain persisted across refreshes and re-imports, while CSV exports include rule, root, evidence, and final-action metadata.
 
 ## [0.3.2] - 2026-09-03
 
