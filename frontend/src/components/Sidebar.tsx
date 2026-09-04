@@ -15,11 +15,20 @@ export type AppView = 'products' | 'workbench' | 'import' | 'history' | 'ai'
 
 interface SidebarProps {
   view: AppView
-  product: Product | null
+  products: Product[]
+  selectedProductId: string | null
+  onSelectProduct: (product: Product) => void | Promise<void>
   onNavigate: (view: AppView) => void
 }
 
-export function Sidebar({ view, product, onNavigate }: SidebarProps) {
+export function Sidebar({ view, products, selectedProductId, onSelectProduct, onNavigate }: SidebarProps) {
+  const selectedProduct = products.find((product) => product.id === selectedProductId)
+  const visibleProducts = products.slice(0, 3)
+  if (selectedProduct && !visibleProducts.some((product) => product.id === selectedProduct.id)) {
+    visibleProducts.pop()
+    visibleProducts.unshift(selectedProduct)
+  }
+
   return (
     <aside className="sidebar" aria-label="主导航">
       <div className="brand-lockup">
@@ -49,15 +58,34 @@ export function Sidebar({ view, product, onNavigate }: SidebarProps) {
         </SidebarButton>
       </nav>
 
-      <div className={`sidebar-product-card${product ? ' is-current' : ''}`}>
-        <div className="sidebar-product-kicker"><span className="status-dot status-dot-live" /> 当前产品</div>
-        <div className="sidebar-product-name">{product?.name || '尚未选择产品'}</div>
-        <div className="sidebar-product-asins">{product?.referenceAsin || '添加竞品样本后开始'}</div>
-        <div className="sidebar-product-meta">
-          <span><FileSpreadsheet size={13} /> {product?.keywordTotal.toLocaleString('en-US') || '0'} 词</span>
-          <span><BarChart3 size={13} /> {product?.sourceCount || '0'} 来源</span>
+      <section className="sidebar-products" aria-labelledby="sidebar-products-title">
+        <div className="sidebar-products-header">
+          <span className="sidebar-products-label" id="sidebar-products-title">产品快捷切换</span>
+          {products.length > 3 && <button className="sidebar-products-all" type="button" onClick={() => onNavigate('products')}>查看全部 <span aria-hidden="true">→</span></button>}
         </div>
-      </div>
+        {visibleProducts.length > 0 ? <div className="sidebar-product-list">
+          {visibleProducts.map((item) => {
+            const isCurrent = item.id === selectedProductId
+            const statusClass = item.status === '准备中' ? 'preparing' : item.status === '归档' ? 'archived' : 'live'
+            return <button
+              className={`sidebar-product-card${isCurrent ? ' is-current' : ''}`}
+              type="button"
+              key={item.id}
+              onClick={() => void onSelectProduct(item)}
+              aria-pressed={isCurrent}
+              aria-label={`切换到产品：${item.name}${isCurrent ? '（当前产品）' : ''}`}
+            >
+              <div className="sidebar-product-kicker"><span className={`status-dot status-dot-${statusClass}`} /> {isCurrent ? '当前产品' : item.status}</div>
+              <div className="sidebar-product-name">{item.name}</div>
+              <div className="sidebar-product-asins">{item.referenceAsin || '添加竞品样本后开始'} · {item.site}</div>
+              <div className="sidebar-product-meta">
+                <span><FileSpreadsheet size={13} /> {item.keywordTotal.toLocaleString('en-US')} 词</span>
+                <span><BarChart3 size={13} /> {item.sourceCount.toLocaleString('en-US')} 来源</span>
+              </div>
+            </button>
+          })}
+        </div> : <div className="sidebar-products-empty">尚未创建产品</div>}
+      </section>
 
       <div className="sidebar-footer">
         <div className="local-mode-note">
