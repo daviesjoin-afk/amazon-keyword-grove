@@ -1,6 +1,8 @@
 import threading
 import time
+import urllib.error
 
+from backend.app import ai_service
 from backend.app.ai_service import (
     is_short_generic_query,
     public_ai_config,
@@ -24,8 +26,31 @@ def test_public_ai_config_masks_secret_and_never_returns_plaintext_key():
 
     assert public["api_key_set"] is True
     assert public["api_key_hint"] == "••••1234"
+    assert public["fallback_model"] == "minimax/minimax-m2.7:free"
     assert "api_key" not in public
     assert "local-secret-1234" not in str(public)
+
+
+def test_connection_tries_configured_fallback_after_primary_transport_failure(monkeypatch):
+    calls = []
+
+    def fake_request(_config, payload, model_override=None):
+        calls.append((payload["model"], model_override))
+        if model_override == "primary-model":
+            raise urllib.error.URLError("primary unavailable")
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    monkeypatch.setattr(ai_service, "_request", fake_request)
+    result = ai_service.test_ai_connection({
+        "provider": "openrouter",
+        "base_url": "https://api.example.com/v1",
+        "model": "primary-model",
+        "fallback_model": "fallback-model",
+        "api_key": "test-key",
+    })
+
+    assert result["model"] == "fallback-model"
+    assert calls == [("primary-model", "primary-model"), ("primary-model", "fallback-model")]
 
 
 def test_semantic_review_signature_is_stable_and_changes_with_evidence():

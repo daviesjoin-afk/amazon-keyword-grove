@@ -98,6 +98,7 @@ def update_ai_config(payload: AIConfigUpdate) -> dict[str, Any]:
             "provider": clean_text(values.get("provider")) or "openrouter",
             "base_url": base_url,
             "model": model,
+            "fallback_model": clean_text(values.get("fallback_model")),
             "api_key": api_key,
             "enabled": bool(values.get("enabled")),
             "timeout_seconds": int(values.get("timeout_seconds") or 60),

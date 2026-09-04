@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from .api_support import api_error
+from .ai_defaults import OPENROUTER_DEFAULT_FALLBACK_MODEL, OPENROUTER_DEFAULT_MODEL
 from .db import read_connection
 from .utils import clean_text, loads, tokens
 
@@ -32,10 +33,13 @@ def public_ai_config(config: dict[str, Any]) -> dict[str, Any]:
     """Return only fields that are safe to expose to the frontend."""
 
     api_key = clean_text(config.get("api_key"))
+    fallback_value = config.get("fallback_model")
+    fallback_model = OPENROUTER_DEFAULT_FALLBACK_MODEL if fallback_value is None else clean_text(fallback_value)
     return {
         "provider": clean_text(config.get("provider")) or "openrouter",
         "base_url": clean_text(config.get("base_url")) or "https://openrouter.ai/api/v1",
-        "model": clean_text(config.get("model")) or "minimax/minimax-m3:free",
+        "model": clean_text(config.get("model")) or OPENROUTER_DEFAULT_MODEL,
+        "fallback_model": fallback_model,
         "enabled": bool(config.get("enabled")),
         "timeout_seconds": int(config.get("timeout_seconds") or 60),
         "api_key_set": bool(api_key),
@@ -46,7 +50,14 @@ def public_ai_config(config: dict[str, Any]) -> dict[str, Any]:
 def load_ai_config() -> dict[str, Any]:
     with read_connection() as connection:
         row = connection.execute("SELECT value_json FROM app_settings WHERE key = 'ai_config'").fetchone()
-    return loads(row["value_json"], {}) if row else {}
+    config = loads(row["value_json"], {}) if row else {}
+    # Configurations written before the fallback field was introduced still
+    # receive the current defaults. An explicit blank fallback remains off.
+    if not clean_text(config.get("model")):
+        config["model"] = OPENROUTER_DEFAULT_MODEL
+    if "fallback_model" not in config:
+        config["fallback_model"] = OPENROUTER_DEFAULT_FALLBACK_MODEL
+    return config
 
 
 def require_ai_config() -> dict[str, Any]:
@@ -60,14 +71,16 @@ def require_ai_config() -> dict[str, Any]:
     return config
 
 
-def _request(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def _request(config: dict[str, Any], payload: dict[str, Any], model_override: str | None = None) -> dict[str, Any]:
     base_url = clean_text(config.get("base_url")).rstrip("/")
     api_key = clean_text(config.get("api_key"))
-    if not base_url or not clean_text(config.get("model")):
+    model = clean_text(model_override) or clean_text(config.get("model"))
+    if not base_url or not model:
         api_error(422, "missing_ai_config", "请先填写接口地址和模型名称")
+    request_payload = {**payload, "model": model}
     request = urllib.request.Request(
         f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(request_payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}", "api-key": api_key},
         method="POST",
     )
@@ -81,10 +94,27 @@ def _request(config: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
+def _request_with_fallback(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Try the primary model, then one configured fallback on transport failure."""
+
+    primary = clean_text(config.get("model")) or OPENROUTER_DEFAULT_MODEL
+    fallback = clean_text(config.get("fallback_model"))
+    models = [primary] + ([fallback] if fallback and fallback != primary else [])
+    last_error: Exception | None = None
+    for model in models:
+        try:
+            return _request(config, payload, model), model
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as error:
+            last_error = error
+    if last_error:
+        raise last_error
+    api_error(422, "missing_ai_model", "模型名称不能为空")
+
+
 def test_ai_connection(config: dict[str, Any]) -> dict[str, Any]:
     """Send a minimal connectivity probe without product or keyword data."""
 
-    model = clean_text(config.get("model"))
+    model = clean_text(config.get("model")) or OPENROUTER_DEFAULT_MODEL
     payload = {
         "model": model,
         "messages": [
@@ -96,7 +126,7 @@ def test_ai_connection(config: dict[str, Any]) -> dict[str, Any]:
         "stream": False,
     }
     try:
-        result = _request(config, payload)
+        result, model = _request_with_fallback(config, payload)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
         api_error(502, "ai_test_rejected", f"模型接口拒绝测试请求（HTTP {exc.code}）：{detail}")
@@ -115,7 +145,7 @@ def ai_json_response(config: dict[str, Any], payload: dict[str, Any]) -> dict[st
     """Call an OpenAI-compatible model and extract one JSON object from its reply."""
 
     try:
-        result = _request(config, payload)
+        result, _ = _request_with_fallback(config, payload)
     except urllib.error.HTTPError as exc:
         api_error(502, "ai_review_rejected", f"模型接口拒绝审核请求（HTTP {exc.code}）")
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:

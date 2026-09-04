@@ -248,9 +248,11 @@ def test_product_copy_and_ai_config_are_editable_without_exposing_key(client):
     assert configured.status_code == 200, configured.text
     assert configured.json()["api_key_set"] is True
     assert configured.json()["api_key_hint"] == "••••1234"
+    assert configured.json()["fallback_model"] == "minimax/minimax-m2.7:free"
     assert "api_key" not in configured.json()
     fetched = client.get("/api/ai-config")
     assert fetched.json()["model"] == "semantic-model"
+    assert fetched.json()["fallback_model"] == "minimax/minimax-m2.7:free"
     assert "api_key" not in fetched.json()
 
 

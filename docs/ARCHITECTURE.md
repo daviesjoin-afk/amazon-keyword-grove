@@ -27,7 +27,7 @@ flowchart LR
 
 - `main.py`：FastAPI 应用创建、公开路由和产品/关键词工作流编排；
 - `api_support.py`：API 响应整形、查询过滤、Pydantic 兼容和人工编辑校验；
-- `ai_service.py`：AI 配置读取/脱敏、OpenAI-compatible 请求、连接测试、语义审核批次并发与辅助判断；
+- `ai_service.py`：AI 配置读取/脱敏、OpenAI-compatible 请求、主模型失败后的回退模型、连接测试、语义审核批次并发与辅助判断；
 - `importer.py`：SellerSprite 工作簿/CSV 表头识别、字段清洗、增量导入；
 - `analyzer.py`：关键词相关度、核心词根与广告建议规则；
 - `db.py`：SQLite 初始化、连接和持久化辅助；
@@ -57,7 +57,7 @@ flowchart LR
 2. 导入 SellerSprite `.xlsx` / `.xlsm` / `.csv`；
 3. 导入器动态匹配字段并保留必要原始值；
 4. 规则引擎给出相关度和安全优先的广告建议；
-5. 可选 OpenRouter/OpenAI-compatible 语义审核补充理由和置信度；
+5. 可选 OpenRouter/OpenAI-compatible 语义审核补充理由和置信度；请求优先使用主模型，传输失败时才尝试配置的回退模型；
 6. 人工审阅、锁定或修改建议；
 7. 导出 CSV 供后续人工操作。
 
@@ -65,7 +65,7 @@ flowchart LR
 
 ### AI provider
 
-AI API Key 只存储在本地数据库，读取配置时只返回 `api_key_set` 与尾号提示。`ai_service.py` 统一负责模型请求与脱敏配置边界；语义审核是辅助判断，不能绕过规则安全边界和人工审批。并发只作用于独立的远端模型调用，且并发度有硬上限；错误摘要不得包含完整 API Key。
+AI API Key 只存储在本地数据库，读取配置时只返回 `api_key_set` 与尾号提示。`ai_service.py` 统一负责模型请求与脱敏配置边界；默认主模型为 OpenRouter 免费 MiniMax M3，默认回退模型为免费 MiniMax M2.7，回退可关闭或自定义，且只在主模型传输失败时触发。语义审核是辅助判断，不能绕过规则安全边界和人工审批。并发只作用于独立的远端模型调用，且并发度有硬上限；错误摘要不得包含完整 API Key。
 
 ### Imported files
 

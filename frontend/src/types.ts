@@ -98,6 +98,7 @@ export interface AIConfig {
   provider: string
   baseUrl: string
   model: string
+  fallbackModel: string
   enabled: boolean
   timeoutSeconds: number
   apiKeySet: boolean
@@ -109,6 +110,7 @@ export interface AIConfigPayload {
   provider: string
   baseUrl: string
   model: string
+  fallbackModel: string
   apiKey?: string
   enabled: boolean
   timeoutSeconds: number
