@@ -296,11 +296,12 @@ ul { margin: 0; padding: 0; list-style: none; }
 
 /* Product actions and current-product emphasis */
 .product-card { position: relative; }
-.product-card-main { padding-right: 46px; }
-.product-card.is-current .product-card-main { background: linear-gradient(145deg, var(--boxwood-50), #fff 62%); border: 2px solid var(--boxwood-700); box-shadow: 0 8px 22px rgba(47, 107, 79, .14); }
+.product-card-main { padding-right: 92px; }
+.product-card.is-current .product-card-main { background: linear-gradient(145deg, var(--boxwood-50), #fff 62%); border: 2px solid var(--boxwood-700); outline: 2px solid var(--boxwood-300, #a8c9b0); outline-offset: 2px; box-shadow: 0 8px 22px rgba(47, 107, 79, .14); }
 .product-card.is-current .product-card-icon { box-shadow: 0 0 0 3px rgba(47, 107, 79, .1); }
 .product-current-badge { padding: 3px 6px; color: var(--boxwood-900); background: var(--boxwood-100); border: 1px solid var(--boxwood-200); border-radius: 4px; font-size: 9px; font-weight: 600; white-space: nowrap; }
-.product-delete-button { position: absolute; z-index: 2; top: 12px; right: 11px; display: inline-grid; width: 28px; height: 28px; place-items: center; padding: 0; color: var(--ink-500); background: rgba(255, 255, 255, .9); border: 1px solid var(--ink-200); border-radius: 6px; }
+.product-delete-button { position: absolute; z-index: 2; top: 12px; right: 11px; display: inline-flex; height: 30px; align-items: center; gap: 5px; padding: 0 9px; color: var(--ink-600); background: rgba(255, 255, 255, .95); border: 1px solid var(--ink-200); border-radius: 6px; font-size: 11px; font-weight: 600; }
+.product-delete-button:focus-visible { outline: 3px solid rgba(202, 110, 103, .35); outline-offset: 2px; }
 .product-delete-button:hover { color: var(--red-800); background: var(--red-100); border-color: var(--red-200); }
 
 /* Import wizard */
