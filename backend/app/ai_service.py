@@ -140,7 +140,7 @@ def semantic_batch_prompt(config: dict[str, Any], product: dict[str, Any], candi
         "messages": [
             {
                 "role": "system",
-                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. Keep reason_zh concise (under 40 Chinese characters). The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
+                "content": "You are an Amazon PPC semantic reviewer. Return JSON only and review every supplied id exactly once. Keep reason_zh concise (under 40 Chinese characters). The local rule score/action is evidence, not a replacement for semantic judgment. For targeting, use only exact or broad; never use phrase targeting. Negative phrase is decided by a product-level second pass after negative-exact results; when uncertain, return negative_exact or observe. Never suggest a negative phrase unless the supplied keyword is a repeated root and clearly incompatible with the product. Use one decision per keyword: exact, broad, negative_exact, negative_phrase, or observe.",
             },
             {
                 "role": "user",

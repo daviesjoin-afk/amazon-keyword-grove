@@ -50,6 +50,7 @@ export interface KeywordRecord {
   category: string
   intent: string
   suggestedAction: SuggestedAction
+  negativePhraseRoot?: string
   suggestionReason: string
   confidence: number
   risk: '低' | '中' | '高'
