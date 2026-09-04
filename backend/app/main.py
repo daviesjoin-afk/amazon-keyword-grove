@@ -116,6 +116,23 @@ def test_ai_config() -> dict[str, Any]:
     return _test_ai_connection(_ai_config_or_error())
 
 
+def _prepare_full_semantic_review(product_id: int) -> None:
+    """Reset unlocked review state while preserving local rules and locks."""
+
+    with transaction() as connection:
+        product = _product_dict(_get_product(connection, product_id))
+        _update_automatic_analysis(connection, product_id, product)
+        connection.execute(
+            """UPDATE keywords
+               SET semantic_reviewed = CASE WHEN manual_locked = 1 THEN 1 ELSE 0 END,
+                   semantic_reviewed_at = CASE WHEN manual_locked = 1 THEN semantic_reviewed_at ELSE NULL END,
+                   semantic_review_signature = CASE WHEN manual_locked = 1 THEN semantic_review_signature ELSE NULL END,
+                   updated_at = ?
+               WHERE product_id = ? AND deleted_at IS NULL""",
+            (now_iso(), product_id),
+        )
+
+
 def _semantic_review_sync(
     product_id: int,
     payload: SemanticReviewRequest,
@@ -124,6 +141,8 @@ def _semantic_review_sync(
     """Run local-rule candidates through bounded concurrent semantic batches."""
 
     config = _ai_config_or_error()
+    if payload.review_mode == "full":
+        _prepare_full_semantic_review(product_id)
     with read_connection() as connection:
         product_row = _get_product(connection, product_id)
         product = _product_dict(product_row)
@@ -132,7 +151,8 @@ def _semantic_review_sync(
         keyword_source_counts = {int(item["keyword_id"]): int(item["count"]) for item in source_count_rows}
         if payload.keyword_ids:
             placeholders = ", ".join("?" for _ in payload.keyword_ids)
-            rows = connection.execute(f"SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND id IN ({placeholders}) ORDER BY id ASC LIMIT ?", (product_id, *payload.keyword_ids, payload.limit)).fetchall()
+            locked_clause = " AND manual_locked = 0" if payload.review_mode == "full" else ""
+            rows = connection.execute(f"SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND id IN ({placeholders}){locked_clause} ORDER BY id ASC LIMIT ?", (product_id, *payload.keyword_ids, payload.limit)).fetchall()
         else:
             rows = connection.execute(
                 """SELECT * FROM keywords WHERE product_id = ? AND deleted_at IS NULL AND semantic_reviewed = 0
@@ -145,7 +165,7 @@ def _semantic_review_sync(
         if not total:
             _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
         promoted = _promote_negative_phrase_recommendations(product_id, product)
-        return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "reviewed": 0, "batches": 0, "already_reviewed": True, "negative_phrase_promoted": promoted, "items": []}
+        return {"product_id": product_id, "provider": clean_text(config.get("provider")), "model": clean_text(config.get("model")), "review_mode": payload.review_mode, "reviewed": 0, "batches": 0, "already_reviewed": True, "negative_phrase_promoted": promoted, "items": []}
 
     all_candidates = [
         {"id": int(row["id"]), "keyword": row["keyword_raw"], "translation": row["keyword_translation"], "rule_score": row["relevance_score"], "rule_strength": row["match_strength_auto"], "rule_action": row["suggested_action_auto"], "monthly_search_volume": row["monthly_search_volume"], "source_count": max(0, int(row["related_product_count"] if row["related_product_count"] is not None else keyword_source_counts.get(int(row["id"]), len(loads(row["related_asins_json"], []))) or 0)), "source_total": competitor_total, "manual_locked": bool(row["manual_locked"])}
@@ -268,6 +288,7 @@ def _semantic_review_sync(
         "product_id": product_id,
         "provider": clean_text(config.get("provider")),
         "model": clean_text(config.get("model")),
+        "review_mode": payload.review_mode,
         "reviewed": len(applied),
         "batches": len(batch_specs),
         "successful_batches": len(batch_specs) - len(failed_batches),
@@ -355,6 +376,7 @@ def _semantic_review_status_snapshot(product_id: int) -> dict[str, Any]:
         "batches_completed": int(state.get("batches_completed") or 0),
         "successful_batches": int(state.get("successful_batches") or 0),
         "failed_batches": state.get("failed_batches") or [],
+        "review_mode": state.get("review_mode", "incremental"),
         "started_at": state.get("started_at"),
         "updated_at": state.get("updated_at"),
         "completed_at": state.get("completed_at"),
@@ -420,33 +442,47 @@ def _run_background_semantic_review(product_id: int, payload: SemanticReviewRequ
 def _start_background_semantic_review(product_id: int, payload: SemanticReviewRequest) -> dict[str, Any]:
     with read_connection() as connection:
         _get_product(connection, product_id)
-    total, reviewed = _semantic_review_counts(product_id)
-    if not total:
-        _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
-    pending = max(0, total - reviewed)
-    if not pending:
-        with read_connection() as connection:
-            product = _product_dict(_get_product(connection, product_id))
-        promoted = _promote_negative_phrase_recommendations(product_id, product)
-        snapshot = _semantic_review_status_snapshot(product_id)
-        snapshot["negative_phrase_promoted"] = promoted
-        return snapshot
-    candidate_count = min(pending, payload.limit)
-    batch_total = math.ceil(candidate_count / payload.batch_size)
+    requested_mode = payload.review_mode
+    pending = 0
     already_running = False
     with _REVIEW_JOBS_LOCK:
         current = _REVIEW_JOBS.get(product_id)
         if current and current.get("status") == "running":
             already_running = True
         else:
-            timestamp = now_iso()
-            _REVIEW_JOBS[product_id] = {
-                "status": "running", "batches_total": batch_total, "batches_completed": 0,
-                "successful_batches": 0, "failed_batches": [], "started_at": timestamp,
-                "updated_at": timestamp, "completed_at": None, "error": None,
-            }
+            if requested_mode == "full":
+                _prepare_full_semantic_review(product_id)
+                # The background worker may split one run into several windows.
+                # Reset only once here; every window must use incremental
+                # selection after it.
+                payload = SemanticReviewRequest(**(_model_dict(payload) | {"review_mode": "incremental"}))
+            total, reviewed = _semantic_review_counts(product_id)
+            if not total:
+                _api_error(422, "no_keywords", "当前产品还没有可供语义审核的关键词")
+            pending = max(0, total - reviewed)
+            if not pending:
+                # No model task is created; phrase promotion happens below
+                # after releasing the registry lock.
+                pass
+            else:
+                candidate_count = min(pending, payload.limit)
+                batch_total = math.ceil(candidate_count / payload.batch_size)
+                timestamp = now_iso()
+                _REVIEW_JOBS[product_id] = {
+                    "status": "running", "batches_total": batch_total, "batches_completed": 0,
+                    "successful_batches": 0, "failed_batches": [], "started_at": timestamp,
+                    "updated_at": timestamp, "completed_at": None, "error": None, "review_mode": requested_mode,
+                }
     if already_running:
         return _semantic_review_status_snapshot(product_id)
+    if not pending:
+        with read_connection() as connection:
+            product = _product_dict(_get_product(connection, product_id))
+        promoted = _promote_negative_phrase_recommendations(product_id, product)
+        snapshot = _semantic_review_status_snapshot(product_id)
+        snapshot["review_mode"] = requested_mode
+        snapshot["negative_phrase_promoted"] = promoted
+        return snapshot
     thread = threading.Thread(target=_run_background_semantic_review, args=(product_id, payload), name=f"ai-review-{product_id}", daemon=True)
     thread.start()
     return _semantic_review_status_snapshot(product_id)

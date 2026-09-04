@@ -164,23 +164,50 @@ export default function App() {
     setToast('自定义名字和产品资料已保存。')
   }
 
-  async function runSemanticReview() {
+  async function deleteProduct(product: Product) {
+    if (!window.confirm(`确定删除产品“${product.name}”吗？产品及其关键词库会移入归档，不再显示在产品中心。`)) return
+    try {
+      await api.deleteProduct(product.id)
+      const remaining = products.filter((item) => item.id !== product.id)
+      setProducts(remaining)
+      if (selectedProductIdRef.current === product.id) {
+        const nextProduct = remaining[0] || null
+        selectProduct(nextProduct?.id || null)
+        setReviewProgress(null)
+        setReviewPollNonce((current) => current + 1)
+        if (nextProduct) {
+          setView('workbench')
+          await loadProductData(nextProduct)
+        } else {
+          setKeywords([])
+          setBatches([])
+          setView('products')
+        }
+      }
+      setToast(`产品“${product.name}”已移入归档。`)
+    } catch (error) {
+      setToast(error instanceof Error ? `删除产品失败：${error.message}` : '删除产品失败，请检查本地 API。')
+    }
+  }
+
+  async function runSemanticReview(reviewMode: 'incremental' | 'full' = 'incremental') {
     if (!selectedProduct || semanticReviewing) return
     if (!keywords.length) {
       setToast('当前产品还没有关键词，请先导入关键词表后再进行 AI 语义审核。')
       return
     }
+    if (reviewMode === 'full' && !window.confirm('重新审核会重新处理所有未人工锁定的关键词，并产生新的模型调用。确定继续吗？')) return
     const reviewProduct = selectedProduct
     try {
-      await api.semanticReview(reviewProduct.id, undefined, true)
+      await api.semanticReview(reviewProduct.id, undefined, true, reviewMode)
       const status = await api.getSemanticReviewStatus(reviewProduct.id)
       if (selectedProductIdRef.current === reviewProduct.id) {
         setReviewProgress(status)
         setReviewPollNonce((current) => current + 1)
         if (status.status !== 'running') await loadProductData(reviewProduct)
       }
-      if (status.status === 'completed' && status.pending === 0) setToast('当前产品全部关键词已经完成 AI 语义审核。')
-      else if (status.status === 'running') setToast(`已开始 AI 增量审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
+      if (status.status === 'completed' && status.pending === 0) setToast(reviewMode === 'full' ? '当前产品已完成重新审核，人工锁定记录未改变。' : '当前产品全部关键词已经完成 AI 语义审核。')
+      else if (status.status === 'running') setToast(`已开始${reviewMode === 'full' ? '重新' : '增量'}审核，当前进度 ${status.reviewed.toLocaleString('en-US')} / ${status.total.toLocaleString('en-US')}；刷新后会继续显示进度。`)
       else setToast('AI 语义审核状态已更新，请查看广告建议页的进度。')
     } catch (error) {
       setToast(error instanceof Error ? `AI 语义审核未完成：${error.message}` : 'AI 语义审核未完成，请检查全局 AI 设置。')
@@ -230,10 +257,10 @@ export default function App() {
   }
 
   if (loading) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>正在打开关键词空间</strong><span>加载本地演示数据…</span></div>
-  if (!selectedProduct) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>还没有产品</strong><span>进入产品中心创建第一个关键词空间。</span><button className="button button-primary" type="button" onClick={() => setView('products')}>打开产品中心</button></div>
+  if (!selectedProduct && view !== 'products') return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>还没有产品</strong><span>进入产品中心创建第一个关键词空间。</span><button className="button button-primary" type="button" onClick={() => setView('products')}>打开产品中心</button></div>
 
-  const workbench = <Workbench product={selectedProduct} keywords={keywords} batches={batches} onOpenImport={() => navigate('import')} onSelectKeyword={setDrawerKeyword} onUpdateKeywords={updateKeywords} onSaveProduct={updateProductCopy} onExport={exportKeywords} onSemanticReview={runSemanticReview} semanticReviewing={semanticReviewing} reviewProgress={reviewProgress} />
-  const content = view === 'products' ? <ProductsView products={products} onOpen={openProduct} onImport={() => navigate('import')} onCreate={createProduct} /> : view === 'import' ? <ImportWizard product={selectedProduct} mappings={mappings} onImport={(file) => api.importFile(selectedProduct.id, file)} onFinish={finishImport} /> : view === 'ai' ? <AISettingsPage /> : workbench
+  const workbench = selectedProduct ? <Workbench product={selectedProduct} keywords={keywords} batches={batches} onOpenImport={() => navigate('import')} onSelectKeyword={setDrawerKeyword} onUpdateKeywords={updateKeywords} onSaveProduct={updateProductCopy} onExport={exportKeywords} onSemanticReview={runSemanticReview} semanticReviewing={semanticReviewing} reviewProgress={reviewProgress} /> : null
+  const content = view === 'products' ? <ProductsView products={products} selectedProductId={selectedProductId} onOpen={openProduct} onDelete={deleteProduct} onImport={() => navigate('import')} onCreate={createProduct} /> : view === 'import' && selectedProduct ? <ImportWizard product={selectedProduct} mappings={mappings} onImport={(file) => api.importFile(selectedProduct.id, file)} onFinish={finishImport} /> : view === 'ai' ? <AISettingsPage /> : workbench
 
   return <div className="app-shell"><Sidebar view={view} product={selectedProduct} onNavigate={navigate} /><div className="app-main"><Topbar view={view} product={selectedProduct} isMock={isMock} onNavigate={navigate} /><main id="main-content" tabIndex={-1}>{loadError && <div className="global-alert"><RefreshCw size={15} /><span>{loadError}</span><button type="button" onClick={() => setLoadError('')} aria-label="关闭错误提示"><X size={15} /></button></div>}{content}</main></div>{drawerKeyword && <KeywordDrawer keyword={drawerKeyword} onClose={() => setDrawerKeyword(null)} onSave={saveKeyword} />}{toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={16} /><span>{toast}</span><button type="button" aria-label="关闭提示" onClick={() => setToast('')}><X size={14} /></button></div>}</div>
 }

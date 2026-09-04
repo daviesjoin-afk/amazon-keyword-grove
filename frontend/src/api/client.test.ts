@@ -163,4 +163,17 @@ describe('API client', () => {
 
     await expect(api.getAIConfig()).rejects.toThrow('API 503: Service Unavailable')
   })
+
+  it('sends the selected semantic review mode to the backend', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ review_mode: 'full' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.semanticReview('product-1', 100, true, 'full')
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      limit: 100,
+      background: true,
+      review_mode: 'full',
+    })
+  })
 })

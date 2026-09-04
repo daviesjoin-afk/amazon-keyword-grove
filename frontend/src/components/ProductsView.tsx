@@ -1,15 +1,17 @@
-import { Archive, ArrowUpRight, Boxes, CheckCircle2, Copy, MoreHorizontal, Plus, Search, Upload, UsersRound } from 'lucide-react'
+import { Archive, ArrowUpRight, Boxes, CheckCircle2, Plus, Search, Trash2, Upload } from 'lucide-react'
 import { useState } from 'react'
 import type { Product, ProductPayload } from '../types'
 
 interface ProductsViewProps {
   products: Product[]
+  selectedProductId: string | null
   onOpen: (product: Product) => void
+  onDelete: (product: Product) => Promise<void>
   onImport: () => void
   onCreate: (payload: ProductPayload) => void
 }
 
-export function ProductsView({ products, onOpen, onImport, onCreate }: ProductsViewProps) {
+export function ProductsView({ products, selectedProductId, onOpen, onDelete, onImport, onCreate }: ProductsViewProps) {
   const [query, setQuery] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const filtered = products.filter((product) => !query || [product.name, product.referenceAsin, product.site].some((value) => value.toLowerCase().includes(query.toLowerCase())))
@@ -20,13 +22,13 @@ export function ProductsView({ products, onOpen, onImport, onCreate }: ProductsV
     <div className="page-heading-row products-heading"><div><span className="panel-kicker">Product registry / 多产品</span><h1>产品中心</h1><p>为每个自有产品隔离词库、分类与投放判断。竞品 ASIN 仅作为来源，不会被当作自有产品。</p></div><div className="page-heading-actions"><button className="button button-secondary" type="button" onClick={onImport}><Upload size={16} />导入关键词表</button><button className="button button-primary" type="button" onClick={() => setShowCreate(true)}><Plus size={17} />新建产品</button></div></div>
     <section className="products-overview-strip"><div><span className="strip-label">产品词库</span><strong>{products.length}</strong><small>个产品</small></div><div><span className="strip-label">关键词资产</span><strong>{totalKeywords.toLocaleString('en-US')}</strong><small>去重后</small></div><div><span className="strip-label">竞品来源</span><strong>{totalSources}</strong><small>个 ASIN 关系</small></div><div className="strip-aside"><CheckCircle2 size={16} /><span>数据保存在本机 · 未连接 Amazon</span></div></section>
     <div className="products-toolbar"><label className="search-field"><Search size={16} /><span className="sr-only">搜索产品</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索产品名称、ASIN 或站点" /></label><span className="products-count">{filtered.length} / {products.length} 个产品</span></div>
-    <div className="product-grid">{filtered.map((product) => <ProductCard key={product.id} product={product} onOpen={() => onOpen(product)} />)}<button className="new-product-card" type="button" onClick={() => setShowCreate(true)}><span><Plus size={20} /></span><strong>建立下一个产品词库</strong><small>录入标题和五点后即可导入竞品反查表</small></button></div>
+    <div className="product-grid">{filtered.map((product) => <ProductCard key={product.id} product={product} isCurrent={product.id === selectedProductId} onOpen={() => onOpen(product)} onDelete={() => onDelete(product)} />)}<button className="new-product-card" type="button" onClick={() => setShowCreate(true)}><span><Plus size={20} /></span><strong>建立下一个产品词库</strong><small>录入标题和五点后即可导入竞品反查表</small></button></div>
     {showCreate && <CreateProductModal onClose={() => setShowCreate(false)} onCreate={(payload) => { onCreate(payload); setShowCreate(false) }} />}
   </div>
 }
 
-function ProductCard({ product, onOpen }: { product: Product; onOpen: () => void }) {
-  return <article className="product-card"><button className="product-card-main" type="button" onClick={onOpen}><div className="product-card-top"><span className="product-card-icon"><Boxes size={20} /></span><span className="product-status"><i />{product.status}</span><MoreHorizontal size={16} className="product-more" /></div><h2>{product.name}</h2><p>{product.category}</p><div className="product-reference"><span>竞品参考</span><code>{product.referenceAsin}</code><small>{product.site}</small></div><div className="product-card-metrics"><span><strong>{product.keywordTotal.toLocaleString('en-US')}</strong><small>关键词</small></span><span><strong>{product.strongCount.toLocaleString('en-US')}</strong><small>强匹配</small></span><span><strong>{product.sourceCount}</strong><small>来源 ASIN</small></span></div><div className="product-card-footer"><span>最近导入 {product.lastImportedAt}</span><ArrowUpRight size={15} /></div></button></article>
+function ProductCard({ product, isCurrent, onOpen, onDelete }: { product: Product; isCurrent: boolean; onOpen: () => void; onDelete: () => Promise<void> }) {
+  return <article className={`product-card${isCurrent ? ' is-current' : ''}`}><button className="product-card-main" type="button" onClick={onOpen}><div className="product-card-top"><span className="product-card-icon"><Boxes size={20} /></span><span className="product-status"><i />{product.status}</span>{isCurrent && <span className="product-current-badge">当前产品</span>}</div><h2>{product.name}</h2><p>{product.category}</p><div className="product-reference"><span>竞品参考</span><code>{product.referenceAsin}</code><small>{product.site}</small></div><div className="product-card-metrics"><span><strong>{product.keywordTotal.toLocaleString('en-US')}</strong><small>关键词</small></span><span><strong>{product.strongCount.toLocaleString('en-US')}</strong><small>强匹配</small></span><span><strong>{product.sourceCount}</strong><small>来源 ASIN</small></span></div><div className="product-card-footer"><span>最近导入 {product.lastImportedAt}</span><ArrowUpRight size={15} /></div></button><button className="product-delete-button" type="button" title={`删除${product.name}`} aria-label={`删除${product.name}`} onClick={() => void onDelete()}><Trash2 size={15} /></button></article>
 }
 
 function CreateProductModal({ onClose, onCreate }: { onClose: () => void; onCreate: (payload: ProductPayload) => void }) {

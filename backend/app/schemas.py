@@ -79,6 +79,9 @@ class AIConfigUpdate(BaseModel):
 
 class SemanticReviewRequest(BaseModel):
     keyword_ids: list[int] = Field(default_factory=list)
+    # Incremental review only selects pending rows.  Full review resets
+    # unlocked rows first and then re-runs the same bounded pipeline.
+    review_mode: Literal["incremental", "full"] = "incremental"
     # `limit` is the total number of keywords to review. The endpoint sends
     # them to the configured AI provider in bounded batches so the full product library is audited.
     limit: int = Field(default=10000, ge=1, le=10000)

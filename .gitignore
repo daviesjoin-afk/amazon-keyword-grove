@@ -8,6 +8,7 @@ __pycache__/
 # Node
 node_modules/
 dist/
+.vite/
 
 # Local application data
 data/

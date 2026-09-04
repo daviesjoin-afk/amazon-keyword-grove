@@ -6,6 +6,7 @@ export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
 export interface SemanticReviewResult {
   product_id?: number
+  review_mode?: 'incremental' | 'full'
   status?: SemanticReviewStatus['status']
   total?: number
   pending?: number
@@ -37,6 +38,7 @@ export interface SemanticReviewStatus {
   completed_at?: string | null
   error?: string | null
   negative_phrase_promoted?: Array<{ id: number; keyword: string; root: string; affected_count: number; reason: string }>
+  review_mode?: 'incremental' | 'full'
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -56,9 +58,10 @@ export interface KeywordApi {
   getFieldMappings(): Promise<ApiResult<FieldMapping[]>>
   createProduct(payload: ProductPayload): Promise<ApiResult<Product>>
   updateProduct(productId: string, payload: ProductCopyPayload): Promise<ApiResult<Product>>
+  deleteProduct(productId: string): Promise<void>
   getAIConfig(): Promise<AIConfig>
   saveAIConfig(payload: AIConfigPayload): Promise<AIConfig>
-  semanticReview(productId: string, limit?: number, background?: boolean): Promise<SemanticReviewResult>
+  semanticReview(productId: string, limit?: number, background?: boolean, reviewMode?: 'incremental' | 'full'): Promise<SemanticReviewResult>
   getSemanticReviewStatus(productId: string): Promise<SemanticReviewStatus>
   importFile(productId: string, file: File): Promise<Record<string, unknown>>
 }
@@ -171,6 +174,10 @@ export const api: KeywordApi = {
     const stats = await request<Record<string, unknown>>(`/products/${encodeURIComponent(productId)}/stats`)
     return { data: normalizeProduct(updated, stats), source: 'api' }
   },
+  async deleteProduct(productId) {
+    if (USE_MOCK) return
+    await request<Record<string, unknown>>(`/products/${encodeURIComponent(productId)}`, { method: 'DELETE' })
+  },
   async getAIConfig() {
     if (USE_MOCK) return normalizeAIConfig({})
     return normalizeAIConfig(await request<Record<string, unknown>>('/ai-config'))
@@ -180,9 +187,9 @@ export const api: KeywordApi = {
     const saved = await request<Record<string, unknown>>('/ai-config', { method: 'PUT', body: JSON.stringify({ provider: payload.provider, base_url: payload.baseUrl, model: payload.model, api_key: payload.apiKey || null, enabled: payload.enabled, timeout_seconds: payload.timeoutSeconds }) })
     return normalizeAIConfig(saved)
   },
-  async semanticReview(productId, limit, background = false) {
+  async semanticReview(productId, limit, background = false, reviewMode: 'incremental' | 'full' = 'incremental') {
     if (USE_MOCK) throw new Error('演示模式不调用 AI 语义审核')
-    const body = { ...(limit == null ? {} : { limit }), background }
+    const body = { ...(limit == null ? {} : { limit }), background, review_mode: reviewMode }
     return request<SemanticReviewResult>(`/products/${encodeURIComponent(productId)}/semantic-review`, { method: 'POST', body: JSON.stringify(body) })
   },
   async getSemanticReviewStatus(productId) {

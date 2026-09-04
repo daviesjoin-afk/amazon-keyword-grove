@@ -49,7 +49,7 @@ export function Sidebar({ view, product, onNavigate }: SidebarProps) {
         </SidebarButton>
       </nav>
 
-      <div className="sidebar-product-card">
+      <div className={`sidebar-product-card${product ? ' is-current' : ''}`}>
         <div className="sidebar-product-kicker"><span className="status-dot status-dot-live" /> 当前产品</div>
         <div className="sidebar-product-name">{product?.name || '尚未选择产品'}</div>
         <div className="sidebar-product-asins">{product?.referenceAsin || '添加竞品样本后开始'}</div>
