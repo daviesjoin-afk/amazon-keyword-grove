@@ -12,6 +12,7 @@ const savedConfig: AIConfig = {
   provider: 'openrouter',
   baseUrl: 'https://openrouter.ai/api/v1',
   model: 'minimax/minimax-m3:free',
+  fallbackModel: 'minimax/minimax-m2.7:free',
   enabled: true,
   timeoutSeconds: 60,
   apiKeySet: true,
@@ -96,6 +97,7 @@ describe('AISettingsPage safety contracts', () => {
       provider: 'openrouter',
       baseUrl: 'https://openrouter.ai/api/v1',
       model: 'minimax/minimax-m3:free',
+      fallbackModel: 'minimax/minimax-m2.7:free',
       apiKey: undefined,
       enabled: true,
       timeoutSeconds: 60,
@@ -140,5 +142,13 @@ describe('AISettingsPage safety contracts', () => {
 
     expect(saveSpy).not.toHaveBeenCalled()
     expect(container.textContent).toContain('请填写接口地址和模型名称。')
+  })
+
+  it('shows the free M2.7 preset as the default fallback', async () => {
+    await renderPage()
+
+    const fallbackSelect = container.querySelector('select[aria-label="回退模型预设"]') as HTMLSelectElement
+    expect(fallbackSelect.value).toBe('minimax/minimax-m2.7:free')
+    expect((container.querySelector('input[placeholder="例如 minimax/minimax-m2.7:free"]') as HTMLInputElement).value).toBe('minimax/minimax-m2.7:free')
   })
 })

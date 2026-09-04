@@ -3,6 +3,8 @@ import type { AIConfig, AIConfigPayload, ApiResult, FieldMapping, ImportBatch, K
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765/api'
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
+const DEFAULT_MODEL = 'minimax/minimax-m3:free'
+const DEFAULT_FALLBACK_MODEL = 'minimax/minimax-m2.7:free'
 
 export interface SemanticReviewResult {
   product_id?: number
@@ -76,7 +78,7 @@ const trafficLabels: Record<string, KeywordRecord['trafficTypes'][number]> = { n
 function normalizeAIConfig(item: Record<string, unknown>): AIConfig {
   return {
     provider: String(item.provider || 'openrouter'), baseUrl: String(item.base_url || 'https://openrouter.ai/api/v1'),
-    model: String(item.model || 'minimax/minimax-m3:free'), enabled: Boolean(item.enabled), timeoutSeconds: Number(item.timeout_seconds || 60),
+    model: String(item.model || DEFAULT_MODEL), fallbackModel: item.fallback_model == null ? DEFAULT_FALLBACK_MODEL : String(item.fallback_model), enabled: Boolean(item.enabled), timeoutSeconds: Number(item.timeout_seconds || 60),
     apiKeySet: Boolean(item.api_key_set), apiKeyHint: String(item.api_key_hint || ''), updatedAt: item.updated_at ? String(item.updated_at) : undefined,
   }
 }
@@ -183,8 +185,8 @@ export const api: KeywordApi = {
     return normalizeAIConfig(await request<Record<string, unknown>>('/ai-config'))
   },
   async saveAIConfig(payload) {
-    if (USE_MOCK) return normalizeAIConfig({ ...payload, base_url: payload.baseUrl, timeout_seconds: payload.timeoutSeconds, api_key_set: Boolean(payload.apiKey), api_key_hint: payload.apiKey ? `••••${payload.apiKey.slice(-4)}` : '' })
-    const saved = await request<Record<string, unknown>>('/ai-config', { method: 'PUT', body: JSON.stringify({ provider: payload.provider, base_url: payload.baseUrl, model: payload.model, api_key: payload.apiKey || null, enabled: payload.enabled, timeout_seconds: payload.timeoutSeconds }) })
+    if (USE_MOCK) return normalizeAIConfig({ ...payload, base_url: payload.baseUrl, fallback_model: payload.fallbackModel, timeout_seconds: payload.timeoutSeconds, api_key_set: Boolean(payload.apiKey), api_key_hint: payload.apiKey ? `••••${payload.apiKey.slice(-4)}` : '' })
+    const saved = await request<Record<string, unknown>>('/ai-config', { method: 'PUT', body: JSON.stringify({ provider: payload.provider, base_url: payload.baseUrl, model: payload.model, fallback_model: payload.fallbackModel, api_key: payload.apiKey || null, enabled: payload.enabled, timeout_seconds: payload.timeoutSeconds }) })
     return normalizeAIConfig(saved)
   },
   async semanticReview(productId, limit, background = false, reviewMode: 'incremental' | 'full' = 'incremental') {

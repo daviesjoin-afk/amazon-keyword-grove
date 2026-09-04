@@ -143,6 +143,7 @@ describe('API client', () => {
         provider: 'openrouter',
         base_url: 'https://api.example.com/v1',
         model: 'minimax/minimax-m3:free',
+        fallback_model: 'minimax/minimax-m2.7:free',
         enabled: true,
         timeout_seconds: 45,
         api_key_set: true,
@@ -154,7 +155,7 @@ describe('API client', () => {
 
     const config = await api.getAIConfig()
 
-    expect(config).toMatchObject({ apiKeySet: true, apiKeyHint: '••••1234', timeoutSeconds: 45 })
+    expect(config).toMatchObject({ apiKeySet: true, apiKeyHint: '••••1234', timeoutSeconds: 45, fallbackModel: 'minimax/minimax-m2.7:free' })
     expect(config).not.toHaveProperty('apiKey')
   })
 
@@ -174,6 +175,34 @@ describe('API client', () => {
       limit: 100,
       background: true,
       review_mode: 'full',
+    })
+  })
+
+  it('sends the configured fallback model with AI settings', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      model: 'minimax/minimax-m3:free',
+      fallback_model: 'minimax/minimax-m2.7:free',
+      enabled: false,
+      timeout_seconds: 60,
+      api_key_set: false,
+      api_key_hint: '',
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.saveAIConfig({
+      provider: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'minimax/minimax-m3:free',
+      fallbackModel: 'minimax/minimax-m2.7:free',
+      enabled: false,
+      timeoutSeconds: 60,
+    })
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
+      model: 'minimax/minimax-m3:free',
+      fallback_model: 'minimax/minimax-m2.7:free',
     })
   })
 })

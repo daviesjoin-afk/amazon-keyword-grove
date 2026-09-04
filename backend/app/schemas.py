@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .ai_defaults import OPENROUTER_DEFAULT_FALLBACK_MODEL, OPENROUTER_DEFAULT_MODEL
+
 
 class ProductCreate(BaseModel):
     name: str = Field(min_length=1)
@@ -70,7 +72,8 @@ class MappingPreview(BaseModel):
 class AIConfigUpdate(BaseModel):
     provider: str = "openrouter"
     base_url: str = "https://openrouter.ai/api/v1"
-    model: str = "minimax/minimax-m3:free"
+    model: str = OPENROUTER_DEFAULT_MODEL
+    fallback_model: str = OPENROUTER_DEFAULT_FALLBACK_MODEL
     api_key: str | None = None
     clear_api_key: bool = False
     enabled: bool = False
