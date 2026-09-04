@@ -10,7 +10,7 @@ Keyword Grove 是一个本地优先的亚马逊 SellerSprite 关键词反查表�
 
 > 核心边界：本项目只生成待人工审批的广告建议，不连接 Amazon Ads，也不会自动执行投放、调价或否词。
 
-[架构说明](./docs/ARCHITECTURE.md) · [贡献指南](./CONTRIBUTING.md) · [安全策略](./SECURITY.md) · [产品需求](./PRD-亚马逊关键词库管理工具.md) · [发布记录](./CHANGELOG.md) · [v0.3.2 发布说明](./docs/releases/v0.3.2.md)
+[架构说明](./docs/ARCHITECTURE.md) · [贡献指南](./CONTRIBUTING.md) · [安全策略](./SECURITY.md) · [产品需求](./PRD-亚马逊关键词库管理工具.md) · [广告建议规则优化 PRD](./docs/PRD-广告建议规则优化.md) · [回滚预案](./docs/ROLLBACK-广告建议规则优化.md) · [发布记录](./CHANGELOG.md) · [v0.3.2 发布说明](./docs/releases/v0.3.2.md)
 
 ## 功能
 
