@@ -163,6 +163,15 @@ describe('API client', () => {
     await expect(api.getAIConfig()).rejects.toThrow('API 503: Service Unavailable')
   })
 
+  it('archives a product through the explicit delete endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 7, status: 'archived' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.archiveProduct('product/7')
+
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/products/product%2F7`, expect.objectContaining({ method: 'DELETE' }))
+  })
+
   it('persists manual keyword decisions through the backend patch endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       id: 7,

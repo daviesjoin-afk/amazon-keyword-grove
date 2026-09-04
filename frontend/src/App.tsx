@@ -207,6 +207,27 @@ export default function App() {
     }
   }
 
+  async function deleteProduct(product: Product) {
+    if (!window.confirm(`确定删除产品“${product.name}”吗？产品会被归档，关键词和导入记录仍保留，可由后端恢复。`)) return
+    try {
+      await api.archiveProduct(product.id)
+      const remaining = products.filter((item) => item.id !== product.id)
+      setProducts(remaining)
+      if (selectedProductIdRef.current === product.id) {
+        const nextProduct = remaining[0] || null
+        selectProduct(nextProduct?.id || null)
+        setKeywords([])
+        setBatches([])
+        setReviewProgress(null)
+        if (nextProduct) await loadProductData(nextProduct)
+      }
+      setView('products')
+      setToast(`产品“${product.name}”已删除，数据已归档保留。`)
+    } catch (error) {
+      setToast(error instanceof Error ? `产品删除失败：${error.message}` : '产品删除失败，请检查本地 API。')
+    }
+  }
+
   async function saveKeyword(patch: Partial<KeywordRecord>) {
     if (!drawerKeyword) return
     if (!selectedProduct || USE_MOCK) {
@@ -262,7 +283,7 @@ export default function App() {
   if (!selectedProduct) return <div className="app-loading"><div className="loading-mark"><Leaf size={22} /></div><strong>还没有产品</strong><span>进入产品中心创建第一个关键词空间。</span><button className="button button-primary" type="button" onClick={() => setView('products')}>打开产品中心</button></div>
 
   const workbench = <Workbench product={selectedProduct} keywords={keywords} batches={batches} onOpenImport={() => navigate('import')} onSelectKeyword={setDrawerKeyword} onUpdateKeywords={updateKeywords} onSaveProduct={updateProductCopy} onExport={exportKeywords} onSemanticReview={runSemanticReview} semanticReviewing={semanticReviewing} reviewProgress={reviewProgress} />
-  const content = view === 'products' ? <ProductsView products={products} onOpen={openProduct} onImport={() => navigate('import')} onCreate={createProduct} /> : view === 'import' ? <ImportWizard product={selectedProduct} mappings={mappings} onImport={(file) => api.importFile(selectedProduct.id, file)} onFinish={finishImport} /> : view === 'ai' ? <AISettingsPage /> : workbench
+  const content = view === 'products' ? <ProductsView products={products} selectedProductId={selectedProduct?.id} onOpen={openProduct} onDelete={deleteProduct} onImport={() => navigate('import')} onCreate={createProduct} /> : view === 'import' ? <ImportWizard product={selectedProduct} mappings={mappings} onImport={(file) => api.importFile(selectedProduct.id, file)} onFinish={finishImport} /> : view === 'ai' ? <AISettingsPage /> : workbench
 
   return <div className="app-shell"><Sidebar view={view} product={selectedProduct} onNavigate={navigate} /><div className="app-main"><Topbar view={view} product={selectedProduct} isMock={isMock} onNavigate={navigate} /><main id="main-content" tabIndex={-1}>{loadError && <div className="global-alert"><RefreshCw size={15} /><span>{loadError}</span><button type="button" onClick={() => setLoadError('')} aria-label="关闭错误提示"><X size={15} /></button></div>}{content}</main></div>{drawerKeyword && <KeywordDrawer keyword={drawerKeyword} onClose={() => setDrawerKeyword(null)} onSave={saveKeyword} />}{toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={16} /><span>{toast}</span><button type="button" aria-label="关闭提示" onClick={() => setToast('')}><X size={14} /></button></div>}</div>
 }

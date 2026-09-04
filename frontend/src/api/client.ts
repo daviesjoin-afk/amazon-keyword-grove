@@ -55,6 +55,7 @@ export interface KeywordApi {
   getBatches(productId: string): Promise<ApiResult<ImportBatch[]>>
   getFieldMappings(): Promise<ApiResult<FieldMapping[]>>
   createProduct(payload: ProductPayload): Promise<ApiResult<Product>>
+  archiveProduct(productId: string): Promise<void>
   updateProduct(productId: string, payload: ProductCopyPayload): Promise<ApiResult<Product>>
   updateKeyword(productId: string, keywordId: string, payload: { action?: string | null; locked?: boolean; notes?: string }): Promise<KeywordRecord>
   bulkUpdateKeywords(productId: string, keywordIds: string[], payload: { locked?: boolean; notes?: string }): Promise<{ updated: number; keyword_ids: string[] }>
@@ -177,6 +178,10 @@ export const api: KeywordApi = {
     }
     const created = await request<BackendProduct>('/products', { method: 'POST', body: JSON.stringify({ name: payload.name, site: payload.site.replace('Amazon ', ''), category: payload.category, product_title: payload.title, bullet_points: payload.bullets }) })
     return { data: normalizeProduct(created), source: 'api' }
+  },
+  async archiveProduct(productId) {
+    if (USE_MOCK) return
+    await request<Record<string, unknown>>(`/products/${encodeURIComponent(productId)}`, { method: 'DELETE' })
   },
   async updateProduct(productId, payload) {
     if (USE_MOCK) throw new Error('演示模式不保存产品资料')
